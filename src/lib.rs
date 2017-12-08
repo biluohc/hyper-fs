@@ -1,12 +1,9 @@
 extern crate futures;
-extern crate futures_cpupool;
 extern crate hyper;
 #[macro_use]
 extern crate log;
 extern crate tokio_core;
 extern crate url;
-use futures::future::Executor;
-use futures_cpupool::CpuPool;
 use tokio_core::reactor::Handle;
 use futures::{future, Async, Future, Poll, Sink, Stream};
 use futures::sync::mpsc::{self, Receiver, Sender};
@@ -51,21 +48,38 @@ pub struct StaticFile<TP: ThreadPool, EH = DefaultExceptionHandler> {
 
 impl<TP: ThreadPool, EH> StaticFile<TP, EH> {
     pub fn with_handler<P: Into<PathBuf>>(pool: TP, file: P, handler: EH) -> Self {
+        Self::with_handler_and_cache_secs(pool, file, handler, 0)
+    }
+    pub fn with_handler_and_cache_secs<P: Into<PathBuf>>(
+        pool: TP,
+        file: P,
+        handler: EH,
+        cache_secs: u32,
+    ) -> Self {
         Self {
             pool: pool.clone(),
             file: file.into(),
             handler: handler,
-            cache_secs: 86_400, // 1 day
+            cache_secs: cache_secs,
         }
     }
 }
 impl<TP: ThreadPool> StaticFile<TP, DefaultExceptionHandler> {
     pub fn new<P: Into<PathBuf>>(pool: TP, file: P) -> Self {
-        Self::with_handler(pool, file, DefaultExceptionHandler::default())
+        Self::with_handler_and_cache_secs(pool, file, DefaultExceptionHandler::default(), 0)
+    }
+    pub fn with_cache_secs<P: Into<PathBuf>>(pool: TP, file: P, cache_secs: u32) -> Self {
+        Self::with_handler_and_cache_secs(
+            pool,
+            file,
+            DefaultExceptionHandler::default(),
+            cache_secs,
+        )
     }
 }
-impl<TP: ThreadPool + 'static, EH> Service for StaticFile<TP, EH>
+impl<TP, EH> Service for StaticFile<TP, EH>
 where
+    TP: ThreadPool + 'static,
     EH: Service<
         Request = Request,
         Response = Response,
@@ -185,11 +199,10 @@ fn body_file_init<TP: ThreadPool + 'static>(
 ) -> Receiver<Result<Chunk, Error>> {
     let file = BufReader::new(file);
     let buf: [u8; 8192] = unsafe { mem::uninitialized() };
-    let full = false;
-    let len = 0;
+    let full = None;
     let (sender, body) = mpsc::channel::<Result<Chunk, Error>>(128);
     let new_pool = pool.clone();
-    let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
+    let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, buf));
     body
 }
 
@@ -197,53 +210,64 @@ fn file_nb_read<TP: ThreadPool + 'static>(
     mut file: BufReader<File>,
     mut sender: Sender<Result<Chunk, Error>>,
     pool: TP,
-    mut full: bool,
-    mut len: usize,
+    mut full: Option<Result<Chunk, Error>>,
     mut buf: [u8; 8192],
 ) {
     loop {
-        if full {
-            let vec = (&buf[0..len]).to_vec();
-            if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
-                if e.is_full() {
-                    full = true;
-                    let new_pool = pool.clone();
-                    let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
-                }
-                // receiver break connection
-                trace!("try_send body's chunks failed: {:?}", e);
-                return;
-            }
-            len = 0;
-            full = false;
-        }
-        match file.read(&mut buf) {
-            Ok(len_) => {
-                if len_ == 0 {
-                    return;
-                }
-                let vec = (&buf[0..len_]).to_vec();
-                if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
+        match full {
+            Some(data) => {
+                let finish = data.is_err();
+                if let Err(e) = sender.try_send(data) {
                     if e.is_full() {
-                        full = true;
-                        len = len_;
                         let new_pool = pool.clone();
-                        let _ =
-                            pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
+                        full = Some(e.into_inner());
+                        let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, buf));
                     }
                     // receiver break connection
-                    trace!("try_send body's chunks failed: {:?}", e);
                     return;
                 }
+                // is_err, should break connection
+                if finish {
+                    return;
+                }
+                full = None;
             }
-            Err(e) => {
-                // todo, resend...
-                if let Err(e) = sender.try_send(Err(Error::Io(e))) {
-                    // receiver break connection
-                    trace!("try_send body's chunks failed: {:?}", e);
-                    return;
+            None => {
+                match file.read(&mut buf) {
+                    Ok(len_) => {
+                        if len_ == 0 {
+                            return;
+                        }
+                        let chunk = Chunk::from((&buf[0..len_]).to_vec());
+                        if let Err(e) = sender.try_send(Ok(chunk)) {
+                            if e.is_full() {
+                                full = Some(e.into_inner());
+                                let new_pool = pool.clone();
+                                let _ = pool.push(move || {
+                                    file_nb_read(file, sender, new_pool, full, buf)
+                                });
+                            }
+                            // receiver break connection
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        // todo, resend...
+                        if let Err(e) = sender.try_send(Err(Error::Io(e))) {
+                            if e.is_full() {
+                                let new_pool = pool.clone();
+                                full = Some(e.into_inner());
+                                let _ = pool.push(move || {
+                                    file_nb_read(file, sender, new_pool, full, buf)
+                                });
+                            }
+                            // receiver break connection
+                            return;
+                        }
+                        // send error finish
+                        return;
+                    }
                 }
-                return;
             }
         }
     }
