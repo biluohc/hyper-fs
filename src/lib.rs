@@ -1,56 +1,23 @@
-#[macro_use]
-extern crate log;
-extern crate mxo_env_logger;
-use mxo_env_logger::*;
-
 extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
+#[macro_use]
+extern crate log;
 extern crate tokio_core;
 extern crate url;
 use futures::future::Executor;
 use futures_cpupool::CpuPool;
-use tokio_core::reactor::{Core, Handle};
-use tokio_core::net::TcpListener;
+use tokio_core::reactor::Handle;
 use futures::{future, Async, Future, Poll, Sink, Stream};
 use futures::sync::mpsc::{self, Receiver, Sender};
 use futures::future::FutureResult;
 use hyper::{header, Chunk, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
-use hyper::server::Http;
 
 use std::path::PathBuf;
 use std::fs::{self, File};
 use std::io::{BufReader, ErrorKind as IoErrorKind, Read};
 use std::{mem, time};
-
-fn main() {
-    init().expect("Init Log Failed");
-    let addr = format!(
-        "0.0.0.0:{}",
-        std::env::args().nth(1).unwrap_or("8080".to_owned())
-    ).parse()
-        .unwrap();
-    let file = std::env::args().nth(2).unwrap_or("fn.jpg".to_owned());
-    let pool = CpuPool::new(10);
-
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
-    let listener = TcpListener::bind(&addr, &handle).unwrap();
-
-    let http = Http::new();
-    let server = listener.incoming().for_each(|(socket, addr)| {
-        let static_file_server = StaticFile::new(&pool, &file);
-        http.bind_connection(&handle, socket, addr, static_file_server);
-        Ok(())
-    });
-
-    println!("Listening on http://{} with 1 thread.", addr);
-    core.run(server).unwrap();
-}
-
-
 
 #[derive(Debug, Default)]
 pub struct DefaultExceptionHandler;
@@ -69,15 +36,21 @@ impl Service for DefaultExceptionHandler {
     }
 }
 
-pub struct StaticFile<EH = DefaultExceptionHandler> {
-    pool: CpuPool,
+pub trait ThreadPool: Clone + Send + Sync {
+    fn push<F>(&self, task: F)
+    where
+        F: FnOnce() + Send + 'static;
+}
+
+pub struct StaticFile<TP: ThreadPool, EH = DefaultExceptionHandler> {
+    pool: TP,
     file: PathBuf,
     handler: EH,
     cache_secs: u32,
 }
 
-impl<EH> StaticFile<EH> {
-    pub fn with_handler<P: Into<PathBuf>>(pool: &CpuPool, file: P, handler: EH) -> Self {
+impl<TP: ThreadPool, EH> StaticFile<TP, EH> {
+    pub fn with_handler<P: Into<PathBuf>>(pool: TP, file: P, handler: EH) -> Self {
         Self {
             pool: pool.clone(),
             file: file.into(),
@@ -86,12 +59,12 @@ impl<EH> StaticFile<EH> {
         }
     }
 }
-impl StaticFile<DefaultExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(pool: &CpuPool, file: P) -> Self {
+impl<TP: ThreadPool> StaticFile<TP, DefaultExceptionHandler> {
+    pub fn new<P: Into<PathBuf>>(pool: TP, file: P) -> Self {
         Self::with_handler(pool, file, DefaultExceptionHandler::default())
     }
 }
-impl<EH> Service for StaticFile<EH>
+impl<TP: ThreadPool + 'static, EH> Service for StaticFile<TP, EH>
 where
     EH: Service<
         Request = Request,
@@ -168,9 +141,9 @@ where
 
         // response Header
         let size = metadata.len();
-        let delta_modified = last_modified.duration_since(time::UNIX_EPOCH).expect(
-            "SystemTime::duration_since() failed",
-        );
+        let delta_modified = last_modified
+            .duration_since(time::UNIX_EPOCH)
+            .expect("SystemTime::duration_since() failed");
 
         let etag = format!(
             "{:x}-{:x}.{:x}",
@@ -206,35 +179,40 @@ where
     }
 }
 
-fn body_file_init(file: File, pool: &CpuPool) -> Receiver<Result<Chunk, Error>> {
+fn body_file_init<TP: ThreadPool + 'static>(
+    file: File,
+    pool: &TP,
+) -> Receiver<Result<Chunk, Error>> {
     let file = BufReader::new(file);
     let buf: [u8; 8192] = unsafe { mem::uninitialized() };
     let full = false;
     let len = 0;
     let (sender, body) = mpsc::channel::<Result<Chunk, Error>>(128);
-    let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
+    let new_pool = pool.clone();
+    let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
     body
 }
 
-fn file_nb_read(
+fn file_nb_read<TP: ThreadPool + 'static>(
     mut file: BufReader<File>,
     mut sender: Sender<Result<Chunk, Error>>,
-    pool: &CpuPool,
+    pool: TP,
     mut full: bool,
     mut len: usize,
     mut buf: [u8; 8192],
-) -> FutureResult<(), ()> {
+) {
     loop {
         if full {
             let vec = (&buf[0..len]).to_vec();
             if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
                 if e.is_full() {
                     full = true;
-                    let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
+                    let new_pool = pool.clone();
+                    let _ = pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
                 }
                 // receiver break connection
                 trace!("try_send body's chunks failed: {:?}", e);
-                return future::ok(());
+                return;
             }
             len = 0;
             full = false;
@@ -242,18 +220,20 @@ fn file_nb_read(
         match file.read(&mut buf) {
             Ok(len_) => {
                 if len_ == 0 {
-                    return future::ok(());
+                    return;
                 }
                 let vec = (&buf[0..len_]).to_vec();
                 if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
                     if e.is_full() {
                         full = true;
                         len = len_;
-                        let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
+                        let new_pool = pool.clone();
+                        let _ =
+                            pool.push(move || file_nb_read(file, sender, new_pool, full, len, buf));
                     }
                     // receiver break connection
                     trace!("try_send body's chunks failed: {:?}", e);
-                    return future::ok(());
+                    return;
                 }
             }
             Err(e) => {
@@ -261,9 +241,9 @@ fn file_nb_read(
                 if let Err(e) = sender.try_send(Err(Error::Io(e))) {
                     // receiver break connection
                     trace!("try_send body's chunks failed: {:?}", e);
-                    return future::ok(());
+                    return;
                 }
-                return future::ok(());
+                return;
             }
         }
     }

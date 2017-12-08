@@ -11,3 +11,7 @@ futures ="^0.1.17"
 hyper = "^0.11.8"
 url = "^1.6.0"
 log = "^0.3.8"
+
+[dev-dependencies]
+num_cpus = "^1.2.1"
+poolite = "0.7.1"
