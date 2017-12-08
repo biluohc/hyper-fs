@@ -2,21 +2,20 @@
 extern crate log;
 extern crate mxo_env_logger;
 use mxo_env_logger::*;
-extern crate poolite;
-use poolite::{Builder, Pool};
 
 extern crate futures;
+extern crate futures_cpupool;
 extern crate hyper;
 extern crate tokio_core;
 extern crate url;
-
-use tokio_core::reactor::Handle;
-use tokio_core::reactor::Core;
+use futures::future::Executor;
+use futures_cpupool::CpuPool;
+use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 use futures::{future, Async, Future, Poll, Sink, Stream};
 use futures::sync::mpsc::{self, Receiver, Sender};
 use futures::future::FutureResult;
-use hyper::{header, Body, Chunk, Error, Method, StatusCode};
+use hyper::{header, Chunk, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
 use hyper::server::Http;
 
@@ -24,8 +23,6 @@ use std::path::PathBuf;
 use std::fs::{self, File};
 use std::io::{BufReader, ErrorKind as IoErrorKind, Read};
 use std::{mem, time};
-use std::sync::Arc;
-
 
 fn main() {
     init().expect("Init Log Failed");
@@ -35,7 +32,7 @@ fn main() {
     ).parse()
         .unwrap();
     let file = std::env::args().nth(2).unwrap_or("fn.jpg".to_owned());
-    let pool = Arc::new(Builder::new().max(32).build().unwrap());
+    let pool = CpuPool::new(10);
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -44,7 +41,7 @@ fn main() {
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        let static_file_server = StaticFile::new(&handle, &pool, &file);
+        let static_file_server = StaticFile::new(&pool, &file);
         http.bind_connection(&handle, socket, addr, static_file_server);
         Ok(())
     });
@@ -65,40 +62,33 @@ impl Service for DefaultExceptionHandler {
     type Error = Error;
     type Future = FutureResult<Self::Response, Self::Error>;
     fn call(&self, req: Self::Request) -> Self::Future {
-        future::ok(Response::new().with_status(match req.method() {
-            &Method::Head | &Method::Get => StatusCode::NotFound,
+        future::ok(Response::new().with_status(match *req.method() {
+            Method::Head | Method::Get => StatusCode::NotFound,
             _ => StatusCode::BadRequest,
         }))
     }
 }
 
 pub struct StaticFile<EH = DefaultExceptionHandler> {
-    handle: Handle,
-    pool: Arc<Pool>,
+    pool: CpuPool,
     file: PathBuf,
     handler: EH,
     cache_secs: u32,
 }
 
 impl<EH> StaticFile<EH> {
-    pub fn with_handler<P: Into<PathBuf>>(
-        handle: &Handle,
-        pool: &Arc<Pool>,
-        file: P,
-        handler: EH,
-    ) -> Self {
+    pub fn with_handler<P: Into<PathBuf>>(pool: &CpuPool, file: P, handler: EH) -> Self {
         Self {
-            handle: handle.clone(),
             pool: pool.clone(),
             file: file.into(),
             handler: handler,
-            cache_secs: 86400, // 1 day
+            cache_secs: 86_400, // 1 day
         }
     }
 }
 impl StaticFile<DefaultExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(handle: &Handle, pool: &Arc<Pool>, file: P) -> Self {
-        Self::with_handler(handle, pool, file, DefaultExceptionHandler::default())
+    pub fn new<P: Into<PathBuf>>(pool: &CpuPool, file: P) -> Self {
+        Self::with_handler(pool, file, DefaultExceptionHandler::default())
     }
 }
 impl<EH> Service for StaticFile<EH>
@@ -171,7 +161,6 @@ where
         let http_last_modified = header::HttpDate::from(last_modified);
 
         if let Some(&header::IfModifiedSince(ref value)) = req.headers().get() {
-            println!("m<=b : {:?}", http_last_modified <= *value);
             if http_last_modified <= *value {
                 return future::ok(Response::new().with_status(StatusCode::NotModified));
             }
@@ -202,14 +191,14 @@ where
         }
 
         // response body  stream
-        match req.method() {
-            &Method::Head => {}
-            &Method::Get => {
+        match *req.method() {
+            Method::Head => {}
+            Method::Get => {
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(err) => return future::err(Error::Io(err)),
                 };
-                res.set_body(body_file_init(file, self.pool.clone()));
+                res.set_body(body_file_init(file, &self.pool));
             }
             _ => unreachable!(),
         }
@@ -217,37 +206,35 @@ where
     }
 }
 
-fn body_file_init(file: File, pool: Arc<Pool>) -> Receiver<Result<Chunk, Error>> {
+fn body_file_init(file: File, pool: &CpuPool) -> Receiver<Result<Chunk, Error>> {
     let file = BufReader::new(file);
     let buf: [u8; 8192] = unsafe { mem::uninitialized() };
     let full = false;
     let len = 0;
     let (sender, body) = mpsc::channel::<Result<Chunk, Error>>(128);
-    let pool_new = pool.clone();
-    pool.push(move || file_nb_read(file, sender, pool_new, full, len, buf));
+    let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
     body
 }
 
 fn file_nb_read(
     mut file: BufReader<File>,
     mut sender: Sender<Result<Chunk, Error>>,
-    pool: Arc<Pool>,
+    pool: &CpuPool,
     mut full: bool,
     mut len: usize,
     mut buf: [u8; 8192],
-) {
+) -> FutureResult<(), ()> {
     loop {
         if full {
             let vec = (&buf[0..len]).to_vec();
             if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
                 if e.is_full() {
                     full = true;
-                    let pool_new = pool.clone();
-                    pool.push(move || file_nb_read(file, sender, pool_new, full, len, buf));
+                    let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
                 }
                 // receiver break connection
                 trace!("try_send body's chunks failed: {:?}", e);
-                return;
+                return future::ok(());
             }
             len = 0;
             full = false;
@@ -255,29 +242,28 @@ fn file_nb_read(
         match file.read(&mut buf) {
             Ok(len_) => {
                 if len_ == 0 {
-                    return;
+                    return future::ok(());
                 }
                 let vec = (&buf[0..len_]).to_vec();
                 if let Err(e) = sender.try_send(Ok(Chunk::from(vec))) {
                     if e.is_full() {
                         full = true;
                         len = len_;
-                        let pool_new = pool.clone();
-                        pool.push(move || file_nb_read(file, sender, pool_new, full, len, buf));
+                        let _ = pool.execute(file_nb_read(file, sender, pool, full, len, buf));
                     }
                     // receiver break connection
                     trace!("try_send body's chunks failed: {:?}", e);
-                    return;
+                    return future::ok(());
                 }
             }
             Err(e) => {
-                    // todo, resend...
+                // todo, resend...
                 if let Err(e) = sender.try_send(Err(Error::Io(e))) {
                     // receiver break connection
                     trace!("try_send body's chunks failed: {:?}", e);
-                    return;
+                    return future::ok(());
                 }
-                return;
+                return future::ok(());
             }
         }
     }
