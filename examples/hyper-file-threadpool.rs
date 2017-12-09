@@ -3,16 +3,15 @@ extern crate log;
 extern crate mxo_env_logger;
 use mxo_env_logger::*;
 extern crate hyper;
-extern crate poolite;
+extern crate threadpool;
 
-use poolite::{Builder, Pool};
+use threadpool::{Builder, ThreadPool};
 use hyper::server::Http;
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{StaticFile, FsPool};
+use hyper_fs::{FsPool, StaticFile};
 
-use std::sync::Arc;
 use std::env;
 
 fn main() {
@@ -25,15 +24,12 @@ fn main() {
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
     let file = env::args().nth(2).unwrap_or_else(|| "fn.jpg".to_owned());
 
-    let pool = Pool2(Arc::new(
+    let pool = Pool2(
         Builder::new()
-            .max(num_cpus::get() + 1)
-            .name("hyper-fs")
-            .daemon(None)
-            .timeout(None)
-            .build()
-            .unwrap(),
-    ));
+            .num_threads(num_cpus::get() + 1)
+            .thread_name("hyper-fs".to_owned())
+            .build(),
+    );
 
     let mut server = Http::new()
         .bind(&addr, move || Ok(StaticFile::new(pool.clone(), &file)))
@@ -47,13 +43,13 @@ fn main() {
 }
 
 #[derive(Debug)]
-struct Pool2(Arc<Pool>);
+struct Pool2(ThreadPool);
 impl FsPool for Pool2 {
     fn push<F>(&self, task: F)
     where
         F: FnOnce() + Send + 'static,
     {
-        self.0.push(task)
+        self.0.execute(task)
     }
 }
 impl Clone for Pool2 {
@@ -61,3 +57,5 @@ impl Clone for Pool2 {
         Pool2(self.0.clone())
     }
 }
+// Safe?
+unsafe impl Sync for Pool2 {}

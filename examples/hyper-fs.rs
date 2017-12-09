@@ -5,12 +5,12 @@ use mxo_env_logger::*;
 extern crate hyper;
 extern crate poolite;
 
-use poolite::{Builder, Pool};
 use hyper::server::Http;
+use poolite::{Builder, Pool};
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{StaticFile, FsPool};
+use hyper_fs::{Config, FsPool, StaticFs};
 
 use std::sync::Arc;
 use std::env;
@@ -23,7 +23,7 @@ fn main() {
         .parse::<u16>()
         .unwrap();
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
-    let file = env::args().nth(2).unwrap_or_else(|| "fn.jpg".to_owned());
+    let path = env::args().nth(2).unwrap_or_else(|| "./".to_owned());
 
     let pool = Pool2(Arc::new(
         Builder::new()
@@ -36,7 +36,14 @@ fn main() {
     ));
 
     let mut server = Http::new()
-        .bind(&addr, move || Ok(StaticFile::new(pool.clone(), &file)))
+        .bind(&addr, move || {
+            Ok({
+                let config = Config::new().show_index(true).follow_links(true);
+                let mut sfs = StaticFs::new("/", &path, pool.clone());
+                sfs.set_config(config);
+                sfs
+            })
+        })
         .unwrap();
     server.no_proto();
     println!(
