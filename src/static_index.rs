@@ -97,26 +97,24 @@ where
         let delta_modified = last_modified
             .duration_since(time::UNIX_EPOCH)
             .expect("SystemTime::duration_since(UNIX_EPOCH) failed");
-
-        let http_last_modified = header::HttpDate::from(last_modified - time::Duration::new(0, delta_modified.subsec_nanos()));
-
-        if let Some(&header::IfModifiedSince(ref value)) = req.headers().get() {
-            /*
-Firefox/vivaldi's HttDate lost some information.., sub nsecs above?
-INFO #hyper_fs::static_index:108: 304: false
-INFO #hyper_fs::static_index:109: http
-HttpDate(Tm { tm_sec: 18, tm_min: 18, tm_hour: 10, tm_mday: 16, tm_mon: 11, tm_year: 117, tm_wday: 6, tm_yday: 0, tm_isdst: 0, tm_utcoff: 0, tm_nsec: 0 })
-INFO #hyper_fs::static_index:110: fs  
-HttpDate(Tm { tm_sec: 18, tm_min: 18, tm_hour: 10, tm_mday: 16, tm_mon: 11, tm_year: 117, tm_wday: 6, tm_yday: 349, tm_isdst: 0, tm_utcoff: 0, tm_nsec: 778650995 })
-            */
+        let http_last_modified = header::HttpDate::from(last_modified);
+        let etag =header::EntityTag::weak(format!(
+            "{:x}-{:x}.{:x}",
+             metadata.len(),
+            delta_modified.as_secs(),
+            delta_modified.subsec_nanos()
+        ));
+        if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
+            if !etags.is_empty() {
             debug!(
                 "304: {}\nfs\n{:?}\nhttp\n{:?}",
-                http_last_modified <= *value,
-                http_last_modified,
-                value
+                etag == etags[0],
+                etag,
+               etags[0]
             );
-            if http_last_modified <= *value {
+            if  etag == etags[0] {
                 return future::ok(Response::new().with_status(StatusCode::NotModified));
+            }
             }
         }
 
@@ -130,16 +128,10 @@ HttpDate(Tm { tm_sec: 18, tm_min: 18, tm_hour: 10, tm_mday: 16, tm_mon: 11, tm_y
         };
 
         // response Header
-        let etag = format!(
-            "{:x}-{:x}.{:x}",
-            html.len(),
-            delta_modified.as_secs(),
-            delta_modified.subsec_nanos()
-        );
         let mut res = Response::new()
             .with_header(header::ContentLength(html.len() as u64))
             .with_header(header::LastModified(http_last_modified))
-            .with_header(header::ETag(header::EntityTag::weak(etag)));
+            .with_header(header::ETag(etag));
 
         if self.config().cache_secs != 0 {
             res.headers_mut().set(header::CacheControl(vec![
