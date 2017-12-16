@@ -33,7 +33,7 @@ fn main() {
     let pool = Builder::new().pool_size(2).name_prefix("hyper-fs").create();
     let config = Rc::new(
         Config::new()
-            .cache_secs(0)
+            .cache_secs(60)
             .follow_links(true)
             .show_index(true), // .chunk_size(8196)
     );

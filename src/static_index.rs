@@ -9,8 +9,9 @@ use super::Config;
 
 #[allow(unused_imports)]
 use std::io::{self, ErrorKind as IoErrorKind};
-use std::fs;
 use std::path::PathBuf;
+use std::time;
+use std::fs;
 
 // use Template engine? too heavy...
 /// Simple html list the name of every entry for a index
@@ -78,6 +79,47 @@ where
                 }
             }
         }
+        // HTTP Last-Modified
+        let metadata = match self.index.as_path().metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                self.handler.catch(e);
+                return self.handler.call(req);
+            }
+        };
+        let last_modified = match metadata.modified() {
+            Ok(time) => time,
+            Err(e) => {
+                self.handler.catch(e);
+                return self.handler.call(req);
+            }
+        };
+        let delta_modified = last_modified
+            .duration_since(time::UNIX_EPOCH)
+            .expect("SystemTime::duration_since(UNIX_EPOCH) failed");
+
+        let http_last_modified = header::HttpDate::from(last_modified - time::Duration::new(0, delta_modified.subsec_nanos()));
+
+        if let Some(&header::IfModifiedSince(ref value)) = req.headers().get() {
+            /*
+Firefox/vivaldi's HttDate lost some information.., sub nsecs above?
+INFO #hyper_fs::static_index:108: 304: false
+INFO #hyper_fs::static_index:109: http
+HttpDate(Tm { tm_sec: 18, tm_min: 18, tm_hour: 10, tm_mday: 16, tm_mon: 11, tm_year: 117, tm_wday: 6, tm_yday: 0, tm_isdst: 0, tm_utcoff: 0, tm_nsec: 0 })
+INFO #hyper_fs::static_index:110: fs  
+HttpDate(Tm { tm_sec: 18, tm_min: 18, tm_hour: 10, tm_mday: 16, tm_mon: 11, tm_year: 117, tm_wday: 6, tm_yday: 349, tm_isdst: 0, tm_utcoff: 0, tm_nsec: 778650995 })
+            */
+            debug!(
+                "304: {}\nfs\n{:?}\nhttp\n{:?}",
+                http_last_modified <= *value,
+                http_last_modified,
+                value
+            );
+            if http_last_modified <= *value {
+                return future::ok(Response::new().with_status(StatusCode::NotModified));
+            }
+        }
+
         // io error
         let html = match render_html(&self.index, req.path(), self.config()) {
             Ok(html) => html,
@@ -86,15 +128,32 @@ where
                 return self.handler.call(req);
             }
         };
-        // todo: 304
 
-        let mut res = Response::new().with_header(header::ContentLength(html.len() as u64));
+        // response Header
+        let etag = format!(
+            "{:x}-{:x}.{:x}",
+            html.len(),
+            delta_modified.as_secs(),
+            delta_modified.subsec_nanos()
+        );
+        let mut res = Response::new()
+            .with_header(header::ContentLength(html.len() as u64))
+            .with_header(header::LastModified(http_last_modified))
+            .with_header(header::ETag(header::EntityTag::weak(etag)));
+
+        if self.config().cache_secs != 0 {
+            res.headers_mut().set(header::CacheControl(vec![
+                header::CacheDirective::Public,
+                header::CacheDirective::MaxAge(self.config().cache_secs),
+            ]));
+        }
+
         // response body  stream
         match *req.method() {
-            Method::Head => {}
             Method::Get => {
                 res.set_body(html);
             }
+            Method::Head => {}
             _ => unreachable!(),
         }
         future::ok(res)
