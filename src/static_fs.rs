@@ -11,7 +11,7 @@ use super::Config;
 
 use std::path::{Path, PathBuf};
 
-/// Static FileSystem
+/// Static File System
 // Todu: full test...
 pub struct StaticFs<C, EH = ExceptionHandler> {
     url: PathBuf,  // http's base path
@@ -23,16 +23,16 @@ pub struct StaticFs<C, EH = ExceptionHandler> {
 }
 
 impl<C: AsRef<Config> + Clone> StaticFs<C, ExceptionHandler> {
-    pub fn new<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: C) -> Self
+    pub fn new<P>(handle: Handle, pool: CpuPool, url: P, path: P, config: C) -> Self
     where
         P: Into<PathBuf>,
     {
-        Self::with_handler(url, path, handle, pool, config, ExceptionHandler::default())
+        Self::with_handler(handle, pool, url, path, config, ExceptionHandler::default())
     }
 }
 
 impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> StaticFs<C, EH> {
-    pub fn with_handler<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: C, handler: EH) -> Self
+    pub fn with_handler<P>(handle: Handle, pool: CpuPool, url: P, path: P, config: C, handler: EH) -> Self
     where
         P: Into<PathBuf>,
     {

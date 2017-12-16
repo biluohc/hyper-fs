@@ -8,6 +8,8 @@ use std::fmt;
 ///1. HTTP Method is not `GET` or `HEAD`.
 ///
 ///2. `io::error`: not found, permission denied...
+///
+///3. `StaticFs`'s base url is not a prefix of `Request`'s path.
 #[derive(Default)]
 pub struct ExceptionHandler {
     error: Cell<Option<io::Error>>,

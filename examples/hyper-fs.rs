@@ -25,9 +25,8 @@ fn main() {
     init().expect("Init Log Failed");
     let port = env::args()
         .nth(1)
-        .unwrap_or_else(|| "8000".to_owned())
-        .parse::<u16>()
-        .unwrap();
+        .and_then(|arg| arg.parse().ok())
+        .unwrap_or(8000u16);
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
     let file = env::args().nth(2).unwrap_or_else(|| ".".to_owned());
 
@@ -36,8 +35,7 @@ fn main() {
         Config::new()
             .cache_secs(0)
             .follow_links(true)
-            .show_index(true)
-            // .chunk_size(8196)
+            .show_index(true), // .chunk_size(8196)
     );
 
     let mut core = Core::new().unwrap();
@@ -46,7 +44,7 @@ fn main() {
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        let static_file_server = StaticFs::new("/", &file, handle.clone(), pool.clone(), config.clone());
+        let static_file_server = StaticFs::new(handle.clone(), pool.clone(), "/", &file, config.clone());
         http.bind_connection(&handle, socket, addr, static_file_server);
         Ok(())
     });

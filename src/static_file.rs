@@ -152,7 +152,11 @@ where
                 let (sender, body) = Body::pair();
                 self.handle.spawn(
                     sender
-                        .send_all(FileChunkStream::new(&self.pool, file, *self.config().get_chunk_size()))
+                        .send_all(FileChunkStream::new(
+                            &self.pool,
+                            file,
+                            *self.config().get_chunk_size(),
+                        ))
                         .map(|_| ())
                         .map_err(|_| ()),
                 );
@@ -167,14 +171,14 @@ where
 struct FileChunkStream {
     inner: CpuFuture<Option<(BufReader<File>, Chunk)>, Error>,
     pool: CpuPool,
-    chunk_size:usize,
+    chunk_size: usize,
 }
 impl FileChunkStream {
-    fn new(pool: &CpuPool, file: File,chunk_size: usize) -> Self {
-        let chunk = pool.spawn_fn(move || read_a_chunk(BufReader::new(file),chunk_size));
+    fn new(pool: &CpuPool, file: File, chunk_size: usize) -> Self {
+        let chunk = pool.spawn_fn(move || read_a_chunk(BufReader::new(file), chunk_size));
         FileChunkStream {
             inner: chunk,
-            chunk_size:chunk_size,
+            chunk_size: chunk_size,
             pool: pool.clone(),
         }
     }
@@ -197,8 +201,8 @@ impl Stream for FileChunkStream {
     }
 }
 
-fn read_a_chunk(mut file: BufReader<File>, chunk_size:usize) -> Result<Option<(BufReader<File>, Chunk)>, Error> {
-    let mut buf = BytesMut::with_capacity(chunk_size); //16k
+fn read_a_chunk(mut file: BufReader<File>, chunk_size: usize) -> Result<Option<(BufReader<File>, Chunk)>, Error> {
+    let mut buf = BytesMut::with_capacity(chunk_size);
     match file.read(unsafe { buf.bytes_mut() }) {
         Ok(0) => Ok(None),
         Ok(len) => {

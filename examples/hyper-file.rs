@@ -25,9 +25,9 @@ fn main() {
     init().expect("Init Log Failed");
     let port = env::args()
         .nth(1)
-        .unwrap_or_else(|| "8000".to_owned())
-        .parse::<u16>()
-        .unwrap();
+        .and_then(|arg|
+        arg.parse::<u16>().ok())      
+        .unwrap_or(8000);
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
     let file = env::args()
         .nth(2)
