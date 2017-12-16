@@ -1,15 +1,22 @@
-#[macro_use]
+// #[macro_use]
+extern crate futures;
+extern crate futures_cpupool;
+extern crate hyper;
 extern crate log;
 extern crate mxo_env_logger;
-use mxo_env_logger::*;
-extern crate hyper;
+extern crate tokio_core;
+extern crate url;
 
+use mxo_env_logger::*;
+use futures_cpupool::Builder;
+use tokio_core::reactor::Core;
+use tokio_core::net::TcpListener;
 use hyper::server::Http;
+use futures::Stream;
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{Config,  StaticFs};
-use hyper_fs::Builder;
+use hyper_fs::{Config, StaticFs};
 
 use std::sync::Arc;
 use std::env;
@@ -22,27 +29,26 @@ fn main() {
         .parse::<u16>()
         .unwrap();
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
-    let path = env::args().nth(2).unwrap_or_else(|| "./".to_owned());
+    let file = env::args().nth(2).unwrap_or_else(|| ".".to_owned());
 
-    let pool = Arc::new(
-        // Builder::new().pool_size(1).name_prefix("hyper-fs-").build().unwrap()
-        Builder::new().pool_size(num_cpus::get()+1).name_prefix("hyper-fs-").build().unwrap()
+    let pool = Builder::new().pool_size(2).name_prefix("hyper-fs").create();
+    let config = Arc::new(
+        Config::new()
+            .cache_secs(0)
+            .follow_links(true)
+            .show_index(true),
     );
 
-    let mut server = Http::new()
-        .bind(&addr, move || {
-            Ok({
-                let config = Config::new().show_index(true).follow_links(true);
-                let mut sfs = StaticFs::new("/", &path, &pool);
-                sfs.set_config(config);
-                sfs
-            })
-        })
-        .unwrap();
-    server.no_proto();
-    println!(
-        "Listening on http://{} with 1 thread.",
-        server.local_addr().unwrap()
-    );
-    server.run().unwrap();
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let listener = TcpListener::bind(&addr, &handle).unwrap();
+
+    let http = Http::new();
+    let server = listener.incoming().for_each(|(socket, addr)| {
+        let static_file_server = StaticFs::new("/", &file, handle.clone(), pool.clone(), config.clone());
+        http.bind_connection(&handle, socket, addr, static_file_server);
+        Ok(())
+    });
+    println!("Listening on http://{} with 1 thread.", addr);
+    core.run(server).unwrap();
 }

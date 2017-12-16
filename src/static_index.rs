@@ -1,43 +1,39 @@
-use futures::{future, Async, Future, Poll, Sink, Stream};
-use futures::sync::mpsc::{self, Receiver, Sender};
-use futures::future::FutureResult;
-use hyper::{header, Chunk, Error, Method, StatusCode};
+use futures::future::{self, FutureResult};
+use hyper::{header, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
+#[allow(unused_imports)]
 use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
 
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::Config;
 
-use std::io::{self, BufReader, ErrorKind as IoErrorKind, Read};
-use std::fs::{self, File};
-use std::borrow::BorrowMut;
+#[allow(unused_imports)]
+use std::io::{self, ErrorKind as IoErrorKind};
+use std::fs;
 use std::path::PathBuf;
-use std::{mem, time};
+use std::sync::Arc;
 
 // use Template engine? too heavy...
 /// Simple html list the name of every entry for a index
 pub struct StaticIndex<EH = ExceptionHandler> {
     index: PathBuf,
+    config: Arc<Config>,
     handler: EH,
-    config: Box<Config>,
 }
 
 impl StaticIndex<ExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(index: P) -> Self {
-        Self::with_handler(index, ExceptionHandler::default())
+    pub fn new<P: Into<PathBuf>>(index: P, config: Arc<Config>) -> Self {
+        Self::with_handler(index, config, ExceptionHandler::default())
     }
 }
 
 impl<EH: ExceptionCatcher> StaticIndex<EH> {
-    pub fn with_handler<P: Into<PathBuf>>(index: P, handler: EH) -> Self {
+    pub fn with_handler<P: Into<PathBuf>>(index: P, config: Arc<Config>, handler: EH) -> Self {
         Self {
             index: index.into(),
+            config: config,
             handler: handler,
-            config: Box::new(Config::new()),
         }
-    }
-    pub fn set_config(&mut self, config: Config) {
-        *self.config.borrow_mut() = config;
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -45,13 +41,7 @@ impl<EH: ExceptionCatcher> StaticIndex<EH> {
 }
 impl<EH> Service for StaticIndex<EH>
 where
-    EH: ExceptionCatcher
-        + Service<
-        Request = Request,
-        Response = Response,
-        Error = Error,
-        Future = FutureResult<Response, Error>,
-    >,
+    EH: ExceptionCatcher + Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
 {
     type Request = Request;
     type Response = Response;

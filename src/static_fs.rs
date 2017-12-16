@@ -1,54 +1,50 @@
 use futures::future::FutureResult;
 use hyper::server::{Request, Response, Service};
 use hyper::{Error, Method};
+use futures_cpupool::CpuPool;
+use tokio_core::reactor::Handle;
 
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::StaticIndex;
 use super::StaticFile;
-// use super::FsPool;
 use super::Config;
-use super::pool::FsPool;
 
-use std::io::{self, BufReader, Read};
-use std::fs::{self, File};
-use std::path::{Component, Path, PathBuf};
-use std::{mem, time};
-use std::borrow::BorrowMut;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
 /// Static FileSystem
 // Todu: full test...
 pub struct StaticFs<EH = ExceptionHandler> {
     url: PathBuf,  // http's base path
     path: PathBuf, // Fs's base path
-    pool: Arc<FsPool>,
+    handle: Handle,
+    pool: CpuPool,
+    config: Arc<Config>,
     handler: EH,
-    config: Box<Config>,
 }
 
 impl StaticFs<ExceptionHandler> {
-    pub fn new<P>(url: P, path: P, pool: &Arc<FsPool>) -> Self
+    pub fn new<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: Arc<Config>) -> Self
     where
         P: Into<PathBuf>,
     {
-        Self::with_handler(url, path, pool, ExceptionHandler::default())
+        Self::with_handler(url, path, handle, pool, config, ExceptionHandler::default())
     }
 }
 
 impl<EH: ExceptionCatcher> StaticFs<EH> {
-    pub fn with_handler<P>(url: P, path: P, pool: &Arc<FsPool>, handler: EH) -> Self
+    pub fn with_handler<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: Arc<Config>, handler: EH) -> Self
     where
         P: Into<PathBuf>,
     {
         Self {
             url: url.into(),
             path: path.into(),
-            pool: pool.clone(),
+            handle: handle,
+            pool: pool,
             handler: handler,
-            config: Box::new(Config::new()),
+            config: config,
         }
-    }
-    pub fn set_config(&mut self, config: Config) {
-        *self.config.borrow_mut() = config;
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -57,12 +53,7 @@ impl<EH: ExceptionCatcher> StaticFs<EH> {
 
 impl<EH: ExceptionCatcher> Service for StaticFs<EH>
 where
-    EH: Service<
-        Request = Request,
-        Response = Response,
-        Error = Error,
-        Future = FutureResult<Response, Error>,
-    >,
+    EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
 {
     type Request = Request;
     type Response = Response;
@@ -93,14 +84,12 @@ where
         };
         match metadata {
             Ok(md) => {
-                let config = *self.config.clone();
+                let config = self.config.clone();
                 if md.is_dir() {
-                    let mut index_service = StaticIndex::new(fspath);
-                    index_service.set_config(config);
+                    let index_service = StaticIndex::new(fspath, config);
                     index_service.call(req)
                 } else {
-                    let mut file_service = StaticFile::new(&self.pool, fspath);
-                    file_service.set_config(config);
+                    let file_service = StaticFile::new(self.handle.clone(), self.pool.clone(), fspath, config);
                     file_service.call(req)
                 }
             }

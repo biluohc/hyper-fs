@@ -1,7 +1,6 @@
-use futures::{future, Async, Future, Poll, Sink, Stream};
-use futures::future::FutureResult;
-use hyper::{header, Chunk, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
+use futures::future::{self, FutureResult};
+use hyper::{Error, StatusCode};
 
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::cell::Cell;
@@ -39,12 +38,8 @@ impl Service for ExceptionHandler {
         let error = self.error.replace(None);
         match error {
             Some(e) => match e.kind() {
-                IoErrorKind::NotFound => {
-                    future::ok(Response::new().with_status(StatusCode::NotFound))
-                }
-                IoErrorKind::PermissionDenied => {
-                    future::ok(Response::new().with_status(StatusCode::Forbidden))
-                }
+                IoErrorKind::NotFound => future::ok(Response::new().with_status(StatusCode::NotFound)),
+                IoErrorKind::PermissionDenied => future::ok(Response::new().with_status(StatusCode::Forbidden)),
                 _ => future::err(Error::Io(e)),
             },
             None => future::ok(Response::new().with_status(StatusCode::BadRequest)),

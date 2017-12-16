@@ -9,18 +9,17 @@ opt-level = 3
 # debug = true 
 
 [dependencies]
+futures-cpupool= "^0.1.7"
 mxo_env_logger = "^0.1"
 tokio-core = "^0.1.10"
 futures ="^0.1.17"
 walkdir = "^2.0.1"
 hyper = "^0.11.8"
+bytes = "^0.4.5"
 url = "^1.6.0"
 log = "^0.3.8"
-crossbeam-channel = "*"
-num_cpus = "^1.2.1"
 
 [dev-dependencies]
-futures-cpupool= "^0.1.7"
 threadpool="^1.7.1"
 num_cpus = "^1.2.1"
 poolite = "0.7.1"
