@@ -5,7 +5,7 @@ authors = ["biluohc <biluohc@qq.com>"]
 
 [profile.release]
 opt-level = 3
-lto = true
+# lto = true
 # debug = true 
 
 [dependencies]
@@ -16,6 +16,8 @@ walkdir = "^2.0.1"
 hyper = "^0.11.8"
 url = "^1.6.0"
 log = "^0.3.8"
+crossbeam-channel = "*"
+num_cpus = "^1.2.1"
 
 [dev-dependencies]
 futures-cpupool= "^0.1.7"

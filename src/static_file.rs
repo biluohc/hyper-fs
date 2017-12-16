@@ -5,49 +5,48 @@ use hyper::{header, Chunk, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
 
 use super::{ExceptionCatcher, ExceptionHandler};
-use super::FsPool;
 use super::Config;
+use super::pool::{FsPool,FileRead};
 
-use std::io::{BufReader,Read};
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::{mem, time};
 use std::borrow::BorrowMut;
+use std::sync::Arc;
 
 /// Return a `Response` from a `File`
 ///
 /// Todo: HTTP Bytes
-pub struct StaticFile<FP: FsPool, EH = ExceptionHandler> {
-     pool: FP,
-     file: PathBuf,
-     handler: EH,
-     config: Box<Config>,
+pub struct StaticFile<EH = ExceptionHandler> {
+    pool: Arc<FsPool>,
+    file: PathBuf,
+    handler: EH,
+    config: Box<Config>,
 }
 
-impl<FP: FsPool, EH: ExceptionCatcher> StaticFile<FP, EH> {
-    pub fn with_handler<P: Into<PathBuf>>(pool: FP, file: P, handler: EH) -> Self {
+impl<EH: ExceptionCatcher> StaticFile<EH> {
+    pub fn with_handler<P: Into<PathBuf>>(pool: &Arc<FsPool>, file: P, handler: EH) -> Self {
         Self {
-            pool: pool,
-            file:file.into(),
-            handler:handler,
-            config:Box::new(Config::new())
+            pool: pool.clone(),
+            file: file.into(),
+            handler: handler,
+            config: Box::new(Config::new()),
         }
     }
     pub fn set_config(&mut self, config: Config) {
         *self.config.borrow_mut() = config;
     }
-    pub fn config(&self)-> &Config {
+    pub fn config(&self) -> &Config {
         &self.config
     }
 }
-impl<FP: FsPool> StaticFile<FP, ExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(pool: FP, file: P) -> Self {
+impl StaticFile<ExceptionHandler> {
+    pub fn new<P: Into<PathBuf>>(pool: &Arc<FsPool>, file: P) -> Self {
         Self::with_handler(pool, file, ExceptionHandler::default())
     }
 }
-impl<FP, EH:ExceptionCatcher> Service for StaticFile<FP, EH>
+impl<EH: ExceptionCatcher> Service for StaticFile<EH>
 where
-    FP: FsPool + 'static,
     EH: Service<
         Request = Request,
         Response = Response,
@@ -154,91 +153,12 @@ where
                         return self.handler.call(req);
                     }
                 };
-                res.set_body(body_file_init(file, &self.pool));
+                let (job, body) = FileRead::new(file);
+                self.pool.push(job);
+                res.set_body(body);
             }
             _ => unreachable!(),
         }
         future::ok(res)
-    }
-}
-
-fn body_file_init<FP: FsPool + 'static>(
-    file: File,
-    pool: &FP,
-) -> Receiver<Result<Chunk, Error>> {
-    let file = BufReader::new(file);
-    let buf: [u8; 8192] = unsafe { mem::uninitialized() };
-    let full = None;
-    let (sender, body) = mpsc::channel::<Result<Chunk, Error>>(128);
-    let new_pool = pool.clone();
-    pool.push(move || file_nb_read(file, sender, new_pool, full, buf));
-    body
-}
-
-// ping-pong while client is slow?
-// Todu: test it
-fn file_nb_read<FP: FsPool + 'static>(
-    mut file: BufReader<File>,
-    mut sender: Sender<Result<Chunk, Error>>,
-    pool: FP,
-    mut full: Option<Result<Chunk, Error>>,
-    mut buf: [u8; 8192],
-) {
-    loop {
-        match full {
-            Some(data) => {
-                let finish = data.is_err();
-                if let Err(e) = sender.try_send(data) {
-                    if e.is_full() {
-                        let new_pool = pool.clone();
-                        full = Some(e.into_inner());
-                        pool.push(move || file_nb_read(file, sender, new_pool, full, buf));
-                    }
-                    // receiver break connection
-                    return;
-                }
-                // is_err, should break connection
-                if finish {
-                    return;
-                }
-                full = None;
-            }
-            None => {
-                match file.read(&mut buf) {
-                    Ok(len_) => {
-                        if len_ == 0 {
-                            return;
-                        }
-                        let chunk = Chunk::from((&buf[0..len_]).to_vec());
-                        if let Err(e) = sender.try_send(Ok(chunk)) {
-                            if e.is_full() {
-                                full = Some(e.into_inner());
-                                let new_pool = pool.clone();
-                                pool.push(move || {
-                                    file_nb_read(file, sender, new_pool, full, buf)
-                                });
-                            }
-                            // receiver break connection
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        if let Err(e) = sender.try_send(Err(Error::Io(e))) {
-                            if e.is_full() {
-                                let new_pool = pool.clone();
-                                full = Some(e.into_inner());
-                                pool.push(move || {
-                                    file_nb_read(file, sender, new_pool, full, buf)
-                                });
-                            }
-                            // receiver break connection
-                            return;
-                        }
-                        // send error finish
-                        return;
-                    }
-                }
-            }
-        }
     }
 }

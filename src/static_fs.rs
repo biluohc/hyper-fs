@@ -5,27 +5,28 @@ use hyper::{Error, Method};
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::StaticIndex;
 use super::StaticFile;
-use super::FsPool;
+// use super::FsPool;
 use super::Config;
+use super::pool::FsPool;
 
 use std::io::{self, BufReader, Read};
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
 use std::{mem, time};
 use std::borrow::BorrowMut;
-
+use std::sync::Arc;
 /// Static FileSystem
 // Todu: full test...
-pub struct StaticFs<FP: FsPool, EH = ExceptionHandler> {
+pub struct StaticFs<EH = ExceptionHandler> {
     url: PathBuf,  // http's base path
     path: PathBuf, // Fs's base path
-    pool: FP,
+    pool: Arc<FsPool>,
     handler: EH,
     config: Box<Config>,
 }
 
-impl<FP: FsPool> StaticFs<FP, ExceptionHandler> {
-    pub fn new<P>(url: P, path: P, pool: FP) -> Self
+impl StaticFs<ExceptionHandler> {
+    pub fn new<P>(url: P, path: P, pool: &Arc<FsPool>) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -33,15 +34,15 @@ impl<FP: FsPool> StaticFs<FP, ExceptionHandler> {
     }
 }
 
-impl<FP: FsPool, EH: ExceptionCatcher> StaticFs<FP, EH> {
-    pub fn with_handler<P>(url: P, path: P, pool: FP, handler: EH) -> Self
+impl<EH: ExceptionCatcher> StaticFs<EH> {
+    pub fn with_handler<P>(url: P, path: P, pool: &Arc<FsPool>, handler: EH) -> Self
     where
         P: Into<PathBuf>,
     {
         Self {
             url: url.into(),
             path: path.into(),
-            pool: pool,
+            pool: pool.clone(),
             handler: handler,
             config: Box::new(Config::new()),
         }
@@ -54,9 +55,8 @@ impl<FP: FsPool, EH: ExceptionCatcher> StaticFs<FP, EH> {
     }
 }
 
-impl<FP, EH: ExceptionCatcher> Service for StaticFs<FP, EH>
+impl<EH: ExceptionCatcher> Service for StaticFs<EH>
 where
-    FP: FsPool + 'static,
     EH: Service<
         Request = Request,
         Response = Response,
@@ -99,7 +99,7 @@ where
                     index_service.set_config(config);
                     index_service.call(req)
                 } else {
-                    let mut file_service = StaticFile::new(self.pool.clone(), fspath);
+                    let mut file_service = StaticFile::new(&self.pool, fspath);
                     file_service.set_config(config);
                     file_service.call(req)
                 }

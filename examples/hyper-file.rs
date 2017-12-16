@@ -8,8 +8,7 @@ use hyper::server::Http;
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{Config,  StaticFs};
-use hyper_fs::Builder;
+use hyper_fs::{Builder,  StaticFile};
 
 use std::sync::Arc;
 use std::env;
@@ -22,7 +21,7 @@ fn main() {
         .parse::<u16>()
         .unwrap();
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
-    let path = env::args().nth(2).unwrap_or_else(|| "./".to_owned());
+    let path = env::args().nth(2).unwrap_or_else(|| "fn.jpg".to_owned());
 
     let pool = Arc::new(
         // Builder::new().pool_size(1).name_prefix("hyper-fs-").build().unwrap()
@@ -31,12 +30,9 @@ fn main() {
 
     let mut server = Http::new()
         .bind(&addr, move || {
-            Ok({
-                let config = Config::new().show_index(true).follow_links(true);
-                let mut sfs = StaticFs::new("/", &path, &pool);
-                sfs.set_config(config);
-                sfs
-            })
+            Ok(
+                StaticFile::new(&pool,  &path)
+            )
         })
         .unwrap();
     server.no_proto();

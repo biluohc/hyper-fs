@@ -6,8 +6,11 @@ extern crate tokio_core;
 extern crate url;
 extern crate walkdir;
 
+extern crate crossbeam_channel;
+extern crate num_cpus;
+
+pub mod pool;
 pub(crate) mod exception;
-pub(crate) mod fs_pool;
 pub(crate) mod static_file;
 pub(crate) mod static_index;
 pub(crate) mod static_fs;
@@ -16,15 +19,15 @@ pub use exception::{ExceptionCatcher, ExceptionHandler};
 pub use static_index::StaticIndex;
 pub use static_file::StaticFile;
 pub use static_fs::StaticFs;
-pub use fs_pool::FsPool;
+pub use pool::{FsPool,Builder};
 
 ///public config for file/index/fs
 #[derive(Default, Debug, Clone)]
 pub struct Config {
     follow_links: bool, // default: false
     show_index: bool,   // if false/true, use StaticIndexEmpty/StaticIndex, default is false.
-    hide_entry: bool, // if hide, hide .xxx in index(html), dafault is false.
-    cache_secs: u32,  // 0
+    hide_entry: bool,   // if hide, hide .xxx in index(html), dafault is false.
+    cache_secs: u32,    // 0
 }
 impl Config {
     pub fn new() -> Self {
