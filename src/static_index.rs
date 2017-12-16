@@ -11,24 +11,23 @@ use super::Config;
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 // use Template engine? too heavy...
 /// Simple html list the name of every entry for a index
-pub struct StaticIndex<EH = ExceptionHandler> {
+pub struct StaticIndex<C, EH = ExceptionHandler> {
     index: PathBuf,
-    config: Arc<Config>,
+    config: C,
     handler: EH,
 }
 
-impl StaticIndex<ExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(index: P, config: Arc<Config>) -> Self {
+impl<C: AsRef<Config>> StaticIndex<C, ExceptionHandler> {
+    pub fn new<P: Into<PathBuf>>(index: P, config: C) -> Self {
         Self::with_handler(index, config, ExceptionHandler::default())
     }
 }
 
-impl<EH: ExceptionCatcher> StaticIndex<EH> {
-    pub fn with_handler<P: Into<PathBuf>>(index: P, config: Arc<Config>, handler: EH) -> Self {
+impl<C: AsRef<Config>, EH: ExceptionCatcher> StaticIndex<C, EH> {
+    pub fn with_handler<P: Into<PathBuf>>(index: P, config: C, handler: EH) -> Self {
         Self {
             index: index.into(),
             config: config,
@@ -36,10 +35,10 @@ impl<EH: ExceptionCatcher> StaticIndex<EH> {
         }
     }
     pub fn config(&self) -> &Config {
-        &self.config
+        self.config.as_ref()
     }
 }
-impl<EH> Service for StaticIndex<EH>
+impl<C: AsRef<Config>, EH> Service for StaticIndex<C, EH>
 where
     EH: ExceptionCatcher + Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
 {

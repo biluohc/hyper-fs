@@ -15,21 +15,20 @@ use std::io::{BufReader, Read};
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::time;
-use std::sync::Arc;
 
 /// Return a `Response` from a `File`
 ///
 /// Todo: HTTP Bytes
-pub struct StaticFile<EH = ExceptionHandler> {
+pub struct StaticFile<C, EH = ExceptionHandler> {
     handle: Handle,
     pool: CpuPool,
     file: PathBuf,
-    config: Arc<Config>,
+    config: C,
     handler: EH,
 }
 
-impl<EH: ExceptionCatcher> StaticFile<EH> {
-    pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: Arc<Config>, handler: EH) -> Self {
+impl<C: AsRef<Config>, EH: ExceptionCatcher> StaticFile<C, EH> {
+    pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C, handler: EH) -> Self {
         Self {
             handle: handle,
             pool: pool,
@@ -39,15 +38,15 @@ impl<EH: ExceptionCatcher> StaticFile<EH> {
         }
     }
     pub fn config(&self) -> &Config {
-        &self.config
+        self.config.as_ref()
     }
 }
-impl StaticFile<ExceptionHandler> {
-    pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: Arc<Config>) -> Self {
+impl<C: AsRef<Config>> StaticFile<C, ExceptionHandler> {
+    pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
         Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
     }
 }
-impl<EH: ExceptionCatcher> Service for StaticFile<EH>
+impl<C: AsRef<Config>, EH: ExceptionCatcher> Service for StaticFile<C, EH>
 where
     EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
 {
@@ -153,7 +152,7 @@ where
                 let (sender, body) = Body::pair();
                 self.handle.spawn(
                     sender
-                        .send_all(FileChunkStream::new(&self.pool, file))
+                        .send_all(FileChunkStream::new(&self.pool, file, *self.config().get_chunk_size()))
                         .map(|_| ())
                         .map_err(|_| ()),
                 );
@@ -168,12 +167,14 @@ where
 struct FileChunkStream {
     inner: CpuFuture<Option<(BufReader<File>, Chunk)>, Error>,
     pool: CpuPool,
+    chunk_size:usize,
 }
 impl FileChunkStream {
-    fn new(pool: &CpuPool, file: File) -> Self {
-        let chunk = pool.spawn_fn(move || read_a_chunk(BufReader::new(file)));
+    fn new(pool: &CpuPool, file: File,chunk_size: usize) -> Self {
+        let chunk = pool.spawn_fn(move || read_a_chunk(BufReader::new(file),chunk_size));
         FileChunkStream {
             inner: chunk,
+            chunk_size:chunk_size,
             pool: pool.clone(),
         }
     }
@@ -184,7 +185,8 @@ impl Stream for FileChunkStream {
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.inner.poll() {
             Ok(Async::Ready(Some((file, chunk)))) => {
-                let new_chunk = self.pool.spawn_fn(move || read_a_chunk(file));
+                let chunk_size = self.chunk_size;
+                let new_chunk = self.pool.spawn_fn(move || read_a_chunk(file, chunk_size));
                 self.inner = new_chunk;
                 Ok(Async::Ready(Some(Ok(chunk))))
             }
@@ -195,8 +197,8 @@ impl Stream for FileChunkStream {
     }
 }
 
-fn read_a_chunk(mut file: BufReader<File>) -> Result<Option<(BufReader<File>, Chunk)>, Error> {
-    let mut buf = BytesMut::with_capacity(16384); //16k
+fn read_a_chunk(mut file: BufReader<File>, chunk_size:usize) -> Result<Option<(BufReader<File>, Chunk)>, Error> {
+    let mut buf = BytesMut::with_capacity(chunk_size); //16k
     match file.read(unsafe { buf.bytes_mut() }) {
         Ok(0) => Ok(None),
         Ok(len) => {

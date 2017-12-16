@@ -8,7 +8,7 @@ use hyper::server::Http;
 extern crate hyper_fs;
 use hyper_fs::{Config, StaticIndex};
 
-use std::sync::Arc;
+use std::rc::Rc;
 use std::env;
 
 fn main() {
@@ -20,7 +20,7 @@ fn main() {
         .unwrap();
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
     let index = env::args().nth(2).unwrap_or_else(|| ".".to_owned());
-    let config =Arc::new(Config::new().show_index(true).follow_links(true));    
+    let config = Rc::new(Config::new().show_index(true).follow_links(true));    
 
     let mut server = Http::new()
         .bind(&addr, move || {

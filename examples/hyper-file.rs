@@ -18,7 +18,7 @@ extern crate hyper_fs;
 extern crate num_cpus;
 use hyper_fs::{StaticFile,Config};
 
-use std::sync::Arc;
+use std::rc::Rc;
 use std::env;
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
         .pool_size(2)
         .name_prefix("hyper-fs")
         .create();
-    let config = Arc::new(Config::new().cache_secs(0));
+    let config =Rc::new(Config::new().cache_secs(0));
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();

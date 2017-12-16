@@ -10,21 +10,20 @@ use super::StaticFile;
 use super::Config;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Static FileSystem
 // Todu: full test...
-pub struct StaticFs<EH = ExceptionHandler> {
+pub struct StaticFs<C, EH = ExceptionHandler> {
     url: PathBuf,  // http's base path
     path: PathBuf, // Fs's base path
     handle: Handle,
     pool: CpuPool,
-    config: Arc<Config>,
+    config: C,
     handler: EH,
 }
 
-impl StaticFs<ExceptionHandler> {
-    pub fn new<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: Arc<Config>) -> Self
+impl<C: AsRef<Config> + Clone> StaticFs<C, ExceptionHandler> {
+    pub fn new<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: C) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -32,8 +31,8 @@ impl StaticFs<ExceptionHandler> {
     }
 }
 
-impl<EH: ExceptionCatcher> StaticFs<EH> {
-    pub fn with_handler<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: Arc<Config>, handler: EH) -> Self
+impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> StaticFs<C, EH> {
+    pub fn with_handler<P>(url: P, path: P, handle: Handle, pool: CpuPool, config: C, handler: EH) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -47,11 +46,11 @@ impl<EH: ExceptionCatcher> StaticFs<EH> {
         }
     }
     pub fn config(&self) -> &Config {
-        &self.config
+        self.config.as_ref()
     }
 }
 
-impl<EH: ExceptionCatcher> Service for StaticFs<EH>
+impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> Service for StaticFs<C, EH>
 where
     EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
 {
