@@ -11,9 +11,9 @@ use tokio_core::reactor::Handle;
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::Config;
 
-use std::io::{BufReader, Read};
 use std::fs::{self, File};
 use std::path::PathBuf;
+use std::io::Read;
 use std::time;
 
 /// Return a `Response` from a `File`
@@ -111,7 +111,7 @@ where
             .expect("SystemTime::duration_since(UNIX_EPOCH) failed");
         let http_last_modified = header::HttpDate::from(last_modified);
         let size = metadata.len();
-        let etag =header::EntityTag::weak(format!(
+        let etag = header::EntityTag::weak(format!(
             "{:x}-{:x}.{:x}",
             size,
             delta_modified.as_secs(),
@@ -119,15 +119,15 @@ where
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
             if !etags.is_empty() {
-            debug!(
-                "304: {}\nfs\n{:?}\nhttp\n{:?}",
-                etag == etags[0],
-                etag,
-               etags[0]
-            );
-            if  etag == etags[0] {
-                return future::ok(Response::new().with_status(StatusCode::NotModified));
-            }
+                debug!(
+                    "304: {}\nfs\n{:?}\nhttp\n{:?}",
+                    etag == etags[0],
+                    etag,
+                    etags[0]
+                );
+                if etag == etags[0] {
+                    return future::ok(Response::new().with_status(StatusCode::NotModified));
+                }
             }
         }
 
@@ -175,13 +175,13 @@ where
 }
 
 struct FileChunkStream {
-    inner: CpuFuture<Option<(BufReader<File>, Chunk)>, Error>,
+    inner: CpuFuture<Option<(File, Chunk)>, Error>,
     pool: CpuPool,
     chunk_size: usize,
 }
 impl FileChunkStream {
     fn new(pool: &CpuPool, file: File, chunk_size: usize) -> Self {
-        let chunk = pool.spawn_fn(move || read_a_chunk(BufReader::new(file), chunk_size));
+        let chunk = pool.spawn_fn(move || read_a_chunk(file, chunk_size));
         FileChunkStream {
             inner: chunk,
             chunk_size: chunk_size,
@@ -207,7 +207,7 @@ impl Stream for FileChunkStream {
     }
 }
 
-fn read_a_chunk(mut file: BufReader<File>, chunk_size: usize) -> Result<Option<(BufReader<File>, Chunk)>, Error> {
+fn read_a_chunk(mut file: File, chunk_size: usize) -> Result<Option<(File, Chunk)>, Error> {
     let mut buf = BytesMut::with_capacity(chunk_size);
     match file.read(unsafe { buf.bytes_mut() }) {
         Ok(0) => Ok(None),

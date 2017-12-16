@@ -98,23 +98,23 @@ where
             .duration_since(time::UNIX_EPOCH)
             .expect("SystemTime::duration_since(UNIX_EPOCH) failed");
         let http_last_modified = header::HttpDate::from(last_modified);
-        let etag =header::EntityTag::weak(format!(
+        let etag = header::EntityTag::weak(format!(
             "{:x}-{:x}.{:x}",
-             metadata.len(),
+            metadata.len(),
             delta_modified.as_secs(),
             delta_modified.subsec_nanos()
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
             if !etags.is_empty() {
-            debug!(
-                "304: {}\nfs\n{:?}\nhttp\n{:?}",
-                etag == etags[0],
-                etag,
-               etags[0]
-            );
-            if  etag == etags[0] {
-                return future::ok(Response::new().with_status(StatusCode::NotModified));
-            }
+                debug!(
+                    "304: {}\nfs\n{:?}\nhttp\n{:?}",
+                    etag == etags[0],
+                    etag,
+                    etags[0]
+                );
+                if etag == etags[0] {
+                    return future::ok(Response::new().with_status(StatusCode::NotModified));
+                }
             }
         }
 
