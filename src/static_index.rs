@@ -107,10 +107,11 @@ fn render_html(index: &PathBuf, path: &str, config: &Config) -> io::Result<Strin
         "
 <!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">
 <html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">
-<title>Directory listing for {}</title>
-</head><body><h1>Directory listing for {}</h1><hr><ul>",
-        path, path
+<title>Index listing for {}</title>
+</head><body><h1>Index listing for  <a href=\"{}../\">{}</a></h1><hr><ul>",
+        path, path, path
     );
+
     let mut walker = WalkDir::new(index).min_depth(1).max_depth(1);
     if config.get_follow_links() {
         walker = walker.follow_links(true);

@@ -2,7 +2,7 @@ extern crate bytes;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
-// #[macro_use]
+#[macro_use]
 extern crate log;
 extern crate tokio_core;
 extern crate url;
