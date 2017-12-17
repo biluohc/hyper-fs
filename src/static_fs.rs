@@ -3,6 +3,7 @@ use hyper::server::{Request, Response, Service};
 use hyper::{Error, Method};
 use futures_cpupool::CpuPool;
 use tokio_core::reactor::Handle;
+use url::percent_encoding::percent_decode;
 
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::StaticIndex;
@@ -64,7 +65,18 @@ where
             Method::Head | Method::Get => {}
             _ => return self.handler.call(req),
         }
-        let req_path = req.path().to_owned();
+        let req_path = percent_decode(req.path().as_bytes())
+            .decode_utf8()
+            .unwrap()
+            .into_owned(); // path() is str?, so safe?
+        debug!(
+            "\nurl : {:?}\npath: {:?}\nreqRaw: {:?}\nreqDec: {:?}\nmatch: {:?}",
+            self.url,
+            self.path,
+            req.path(),
+            req_path,
+            Path::new(&req_path).strip_prefix(&self.url)
+        );
         let fspath = match Path::new(&req_path).strip_prefix(&self.url) {
             Ok(p) => {
                 debug_assert!(!p.has_root());

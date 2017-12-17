@@ -3,6 +3,7 @@ use hyper::{header, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
 #[allow(unused_imports)]
 use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
+use url::percent_encoding::{percent_decode, utf8_percent_encode, DEFAULT_ENCODE_SET};
 
 use super::{ExceptionCatcher, ExceptionHandler};
 use super::Config;
@@ -106,12 +107,6 @@ where
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
             if !etags.is_empty() {
-                debug!(
-                    "304: {}\nfs\n{:?}\nhttp\n{:?}",
-                    etag == etags[0],
-                    etag,
-                    etags[0]
-                );
                 if etag == etags[0] {
                     return future::ok(Response::new().with_status(StatusCode::NotModified));
                 }
@@ -153,13 +148,15 @@ where
 }
 
 fn render_html(index: &PathBuf, path: &str, config: &Config) -> io::Result<String> {
+    let path_dec = percent_decode(path.as_bytes()).decode_utf8().unwrap();
+    debug!("\nreq: {:?}\ndec: {:?}",path, path_dec);
     let mut html = format!(
         "
 <!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">
 <html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">
 <title>Index listing for {}</title>
 </head><body><h1>Index listing for  <a href=\"{}../\">{}</a></h1><hr><ul>",
-        path, path, path
+        path_dec, path, path_dec
     );
 
     let mut walker = WalkDir::new(index).min_depth(1).max_depth(1);
@@ -193,6 +190,10 @@ fn entries_render(entry: DirEntry, html: &mut String) {
     if entry.file_type().is_dir() {
         name.push('/');
     }
-    let li = format!("<li><a href=\"{}\">{}</a></li>", name, name);
+    let li = format!(
+        "<li><a href=\"{}\">{}</a></li>",
+        utf8_percent_encode(&name, DEFAULT_ENCODE_SET),
+        name
+    );
     html.push_str(&li);
 }

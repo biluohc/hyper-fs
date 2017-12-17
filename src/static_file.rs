@@ -263,12 +263,6 @@ where
             // 304
             if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
                 if !etags.is_empty() {
-                    debug!(
-                        "304: {}\nfs\n{:?}\nhttp\n{:?}",
-                        etag == etags[0],
-                        etag,
-                        etags[0]
-                    );
                     if etag == etags[0] {
                         return future::ok(
                             Response::new()
