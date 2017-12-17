@@ -5,7 +5,7 @@ authors = ["biluohc <biluohc@qq.com>"]
 
 [profile.release]
 opt-level = 3
-lto = true
+# lto = true
 # debug = true 
 
 [dependencies]
@@ -20,6 +20,4 @@ url = "^1.6.0"
 log = "^0.3.8"
 
 [dev-dependencies]
-threadpool="^1.7.1"
 num_cpus = "^1.2.1"
-poolite = "0.7.1"
