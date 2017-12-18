@@ -5,7 +5,7 @@ use futures_cpupool::CpuPool;
 use tokio_core::reactor::Handle;
 use url::percent_encoding::percent_decode;
 
-use super::{ExceptionCatcher, ExceptionHandler};
+use super::{Exception, ExceptionHandler, ExceptionHandlerService};
 use super::StaticIndex;
 use super::StaticFile;
 use super::Config;
@@ -23,7 +23,10 @@ pub struct StaticFs<C, EH = ExceptionHandler> {
     handler: EH,
 }
 
-impl<C: AsRef<Config> + Clone> StaticFs<C, ExceptionHandler> {
+impl<C> StaticFs<C, ExceptionHandler>
+where
+    C: AsRef<Config> + Clone,
+{
     pub fn new<P0, P1>(handle: Handle, pool: CpuPool, url: P0, path: P1, config: C) -> Self
     where
         P0: Into<PathBuf>,
@@ -33,7 +36,11 @@ impl<C: AsRef<Config> + Clone> StaticFs<C, ExceptionHandler> {
     }
 }
 
-impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> StaticFs<C, EH> {
+impl<C, EH> StaticFs<C, EH>
+where
+    C: AsRef<Config> + Clone,
+    EH: ExceptionHandlerService + Clone,
+{
     pub fn with_handler<P0, P1>(handle: Handle, pool: CpuPool, url: P0, path: P1, config: C, handler: EH) -> Self
     where
         P0: Into<PathBuf>,
@@ -53,9 +60,10 @@ impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> StaticFs<C, EH> {
     }
 }
 
-impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> Service for StaticFs<C, EH>
+impl<C, EH> Service for StaticFs<C, EH>
 where
-    EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
+    C: AsRef<Config> + Clone,
+    EH: ExceptionHandlerService + Clone,
 {
     type Request = Request;
     type Response = Response;
@@ -65,7 +73,7 @@ where
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return self.handler.call(req),
+            _ => return self.handler.call(Exception::Method, req),
         }
         let req_path = percent_decode(req.path().as_bytes())
             .decode_utf8()
@@ -87,7 +95,7 @@ where
                 tmp
             }
             Err(_) => {
-                return self.handler.call(req);
+                return self.handler.call(Exception::Route, req);
             }
         };
         let metadata = if self.config().get_follow_links() {
@@ -99,17 +107,18 @@ where
             Ok(md) => {
                 let config = self.config.clone();
                 if md.is_dir() {
-                    let index_service = StaticIndex::new(fspath, config);
-                    index_service.call(req)
+                    StaticIndex::with_handler(fspath, config, self.handler.clone()).call(req)
                 } else {
-                    let file_service = StaticFile::new(self.handle.clone(), self.pool.clone(), fspath, config);
-                    file_service.call(req)
+                    StaticFile::with_handler(
+                        self.handle.clone(),
+                        self.pool.clone(),
+                        fspath,
+                        config,
+                        self.handler.clone(),
+                    ).call(req)
                 }
             }
-            Err(e) => {
-                self.handler.catch(e);
-                self.handler.call(req)
-            }
+            Err(e) => self.handler.call(e, req),
         }
     }
 }

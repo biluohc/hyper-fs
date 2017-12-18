@@ -5,7 +5,7 @@ use hyper::server::{Request, Response, Service};
 use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
 use url::percent_encoding::{percent_decode, utf8_percent_encode, DEFAULT_ENCODE_SET};
 
-use super::{ExceptionCatcher, ExceptionHandler};
+use super::{Exception, ExceptionHandler, ExceptionHandlerService};
 use super::Config;
 
 #[allow(unused_imports)]
@@ -22,13 +22,20 @@ pub struct StaticIndex<C, EH = ExceptionHandler> {
     handler: EH,
 }
 
-impl<C: AsRef<Config>> StaticIndex<C, ExceptionHandler> {
+impl<C> StaticIndex<C, ExceptionHandler>
+where
+    C: AsRef<Config>,
+{
     pub fn new<P: Into<PathBuf>>(index: P, config: C) -> Self {
         Self::with_handler(index, config, ExceptionHandler::default())
     }
 }
 
-impl<C: AsRef<Config>, EH: ExceptionCatcher> StaticIndex<C, EH> {
+impl<C, EH> StaticIndex<C, EH>
+where
+    C: AsRef<Config>,
+    EH: ExceptionHandlerService,
+{
     pub fn with_handler<P: Into<PathBuf>>(index: P, config: C, handler: EH) -> Self {
         Self {
             index: index.into(),
@@ -40,9 +47,10 @@ impl<C: AsRef<Config>, EH: ExceptionCatcher> StaticIndex<C, EH> {
         self.config.as_ref()
     }
 }
-impl<C: AsRef<Config>, EH> Service for StaticIndex<C, EH>
+impl<C, EH> Service for StaticIndex<C, EH>
 where
-    EH: ExceptionCatcher + Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
+    C: AsRef<Config>,
+    EH: ExceptionHandlerService,
 {
     type Request = Request;
     type Response = Response;
@@ -53,7 +61,7 @@ where
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return self.handler.call(req),
+            _ => return self.handler.call(Exception::Method, req),
         }
         // 301
         if !req.path().ends_with('/') {
@@ -75,8 +83,7 @@ where
                     return future::ok(Response::new());
                 }
                 Err(e) => {
-                    self.handler.catch(e);
-                    return self.handler.call(req);
+                    return self.handler.call(e, req);
                 }
             }
         }
@@ -84,15 +91,13 @@ where
         let metadata = match self.index.as_path().metadata() {
             Ok(m) => m,
             Err(e) => {
-                self.handler.catch(e);
-                return self.handler.call(req);
+                return self.handler.call(e, req);
             }
         };
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                self.handler.catch(e);
-                return self.handler.call(req);
+                return self.handler.call(e, req);
             }
         };
         let delta_modified = last_modified
@@ -117,8 +122,7 @@ where
         let html = match render_html(&self.index, req.path(), self.config()) {
             Ok(html) => html,
             Err(e) => {
-                self.handler.catch(e);
-                return self.handler.call(req);
+                return self.handler.call(e, req);
             }
         };
 

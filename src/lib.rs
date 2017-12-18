@@ -14,7 +14,7 @@ pub(crate) mod static_index;
 pub(crate) mod static_fs;
 pub(crate) mod config;
 
-pub use exception::{ExceptionCatcher, ExceptionHandler};
+pub use exception::{Exception, ExceptionHandler, ExceptionHandlerService};
 pub use static_index::StaticIndex;
 pub use static_file::StaticFile;
 pub use static_fs::StaticFs;

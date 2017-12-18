@@ -8,7 +8,7 @@ use bytes::{BufMut, BytesMut};
 use futures_cpupool::{CpuFuture, CpuPool};
 use tokio_core::reactor::Handle;
 
-use super::{ExceptionCatcher, ExceptionHandler};
+use super::{Exception, ExceptionHandler, ExceptionHandlerService};
 use super::Config;
 
 use std::io::{Read, Seek, SeekFrom};
@@ -27,9 +27,10 @@ pub struct StaticFile<C, EH = ExceptionHandler> {
     handler: EH,
 }
 
-impl<C: AsRef<Config>, EH: ExceptionCatcher> StaticFile<C, EH>
+impl<C, EH> StaticFile<C, EH>
 where
-    EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
+    C: AsRef<Config>,
+    EH: ExceptionHandlerService,
 {
     pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C, handler: EH) -> Self {
         Self {
@@ -130,8 +131,7 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        self.handler.catch(e);
-                        return self.handler.call(req);
+                        return self.handler.call(e, req);
                     }
                 };
                 let (sender, body) = Body::pair();
@@ -154,14 +154,18 @@ where
         future::ok(res)
     }
 }
-impl<C: AsRef<Config>> StaticFile<C, ExceptionHandler> {
+impl<C> StaticFile<C, ExceptionHandler>
+where
+    C: AsRef<Config>,
+{
     pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
         Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
     }
 }
-impl<C: AsRef<Config>, EH: ExceptionCatcher> Service for StaticFile<C, EH>
+impl<C, EH> Service for StaticFile<C, EH>
 where
-    EH: Service<Request = Request, Response = Response, Error = Error, Future = FutureResult<Response, Error>>,
+    C: AsRef<Config>,
+    EH: ExceptionHandlerService,
 {
     type Request = Request;
     type Response = Response;
@@ -174,7 +178,7 @@ where
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return self.handler.call(req),
+            _ => return self.handler.call(Exception::Method, req),
         }
 
         if self.config().cache_secs != 0 {
@@ -188,13 +192,12 @@ where
         let metadata = match fs::metadata(&self.file) {
             Ok(metada) => {
                 if !metada.is_file() {
-                    return self.handler.call(req);
+                    return self.handler.call(Exception::Typo, req);
                 }
                 metada
             }
             Err(e) => {
-                self.handler.catch(e);
-                return self.handler.call(req);
+                return self.handler.call(e, req);
             }
         };
 
@@ -225,8 +228,7 @@ where
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                self.handler.catch(e);
-                return self.handler.call(req);
+                return self.handler.call(e, req);
             }
         };
         let delta_modified = last_modified
@@ -285,8 +287,7 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        self.handler.catch(e);
-                        return self.handler.call(req);
+                        return self.handler.call(e, req);
                     }
                 };
                 let (sender, body) = Body::pair();

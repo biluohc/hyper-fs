@@ -45,8 +45,8 @@ fn main() {
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        let static_file_server = StaticFile::new(handle.clone(), pool.clone(), &file, config.clone());
-        http.bind_connection(&handle, socket, addr, static_file_server);
+        let file_server = StaticFile::new(handle.clone(), pool.clone(), &file, config.clone());
+        http.bind_connection(&handle, socket, addr, file_server);
         Ok(())
     });
     println!("Listening on http://{} with 1 thread.", addr);

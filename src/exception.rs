@@ -1,50 +1,60 @@
-use hyper::server::{Request, Response, Service};
 use futures::future::{self, FutureResult};
+use hyper::server::{Request, Response};
 use hyper::{Error, StatusCode};
 
 use std::io::{self, ErrorKind as IoErrorKind};
-use std::cell::Cell;
 use std::fmt;
-///1. HTTP Method is not `GET` or `HEAD`.
-///
-///2. `io::error`: not found, permission denied...
-///
-///3. `StaticFs`'s base url is not a prefix of `Request`'s path.
-#[derive(Default)]
-pub struct ExceptionHandler {
-    error: Cell<Option<io::Error>>,
+
+/// `Exception`: As same as `Error`.
+#[derive(Debug)]
+pub enum Exception {
+    ///`Io(io::error)`: not found, permission denied...
+    Io(io::Error),
+    /// HTTP Method is not `GET` or `HEAD`.
+    Method,
+    /// New a `StaticFile` by a index(Not is file) or New a `StaticIndex` by a file(Not is index).
+    Typo,
+    /// `StaticFs`'s base url is not a prefix of `Request`'s path.
+    Route,
 }
-impl fmt::Debug for ExceptionHandler {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ExceptionHandler: {{error: Cell<Option<io::Error>>}}")
+
+impl Exception {
+    /// fast creat `Exception::Io(io::Error::from(IoErrorKind::NotFound))`
+    pub fn not_found() -> Self {
+        Exception::Io(io::Error::from(IoErrorKind::NotFound))
     }
 }
 
-/// Catch `io::Error` if it occurs
-pub trait ExceptionCatcher {
-    fn catch(&self, e: io::Error);
-}
-
-impl ExceptionCatcher for ExceptionHandler {
-    fn catch(&self, e: io::Error) {
-        self.error.set(Some(e))
+impl Into<Exception> for io::Error {
+    fn into(self) -> Exception {
+        Exception::Io(self)
     }
 }
 
-impl Service for ExceptionHandler {
-    type Request = Request;
-    type Response = Response;
-    type Error = Error;
-    type Future = FutureResult<Self::Response, Self::Error>;
-    fn call(&self, _req: Self::Request) -> Self::Future {
-        let error = self.error.replace(None);
-        match error {
-            Some(e) => match e.kind() {
+#[derive(Default, Debug, Clone)]
+pub struct ExceptionHandler;
+
+/// handle `Exception` and `return` `Response` if it occurs.
+pub trait ExceptionHandlerService: fmt::Debug {
+    fn call<E>(&self, e: E, req: Request) -> FutureResult<Response, Error>
+    where
+        E: Into<Exception>;
+}
+
+impl ExceptionHandlerService for ExceptionHandler {
+    fn call<E>(&self, e: E, _req: Request) -> FutureResult<Response, Error>
+    where
+        E: Into<Exception>,
+    {
+        use Exception::*;
+        match e.into() {
+            Io(i) => match i.kind() {
                 IoErrorKind::NotFound => future::ok(Response::new().with_status(StatusCode::NotFound)),
                 IoErrorKind::PermissionDenied => future::ok(Response::new().with_status(StatusCode::Forbidden)),
-                _ => future::err(Error::Io(e)),
+                _ => future::err(Error::Io(i)),
             },
-            None => future::ok(Response::new().with_status(StatusCode::MethodNotAllowed)),
+            Method => future::ok(Response::new().with_status(StatusCode::MethodNotAllowed)),
+            Typo | Route => future::ok(Response::new().with_status(StatusCode::InternalServerError)),
         }
     }
 }

@@ -46,7 +46,7 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let listener = TcpListener::bind(&addr, &handle).unwrap();
-    let doc= Doge::new( handle.clone(), pool, config);
+    let doc = Doge::new( handle.clone(), pool, config);
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
