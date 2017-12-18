@@ -8,6 +8,20 @@ extern crate tokio_core;
 extern crate url;
 extern crate walkdir;
 
+use futures::future::{self, FutureResult};
+use hyper::{Error, Response};
+
+pub type FutureResponse = Box<FutureResult<Response, Error>>;
+
+#[doc(hidden)]
+pub fn box_ok(r: Response) -> FutureResponse {
+    Box::new(future::ok(r))
+}
+#[doc(hidden)]
+pub fn box_err(e: Error) -> FutureResponse {
+    Box::new(future::err(e))
+}
+
 pub(crate) mod exception;
 pub(crate) mod static_file;
 pub(crate) mod static_index;

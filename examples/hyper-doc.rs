@@ -12,15 +12,13 @@ use futures_cpupool::{Builder,CpuPool};
 use tokio_core::reactor::Core;
 use tokio_core::reactor::Handle;
 use tokio_core::net::TcpListener;
-use futures::future::FutureResult;
 use futures::Stream;
-use hyper::server::{Request, Response, Service};
-use hyper::server::Http;
+use hyper::server::{Http, Request, Response, Service};
 use hyper::Error;
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{Config, StaticFs, StaticIndex};
+use hyper_fs::{Config, StaticFs, StaticIndex, FutureResponse};
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -113,7 +111,7 @@ impl  Service for Doge
     type Request = Request;
     type Response = Response;
     type Error = Error;
-    type Future = FutureResult<Response, Error>;
+    type Future = FutureResponse;
 
     fn call(&self, req: Request) -> Self::Future { 
         let path = req.path().to_owned();

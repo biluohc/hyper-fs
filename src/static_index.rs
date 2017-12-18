@@ -1,4 +1,3 @@
-use futures::future::{self, FutureResult};
 use hyper::{header, Error, Method, StatusCode};
 use hyper::server::{Request, Response, Service};
 #[allow(unused_imports)]
@@ -6,6 +5,7 @@ use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
 use url::percent_encoding::{percent_decode, utf8_percent_encode, DEFAULT_ENCODE_SET};
 
 use super::{Exception, ExceptionHandler, ExceptionHandlerService};
+use super::{box_ok, FutureResponse};
 use super::Config;
 
 #[allow(unused_imports)]
@@ -55,7 +55,7 @@ where
     type Request = Request;
     type Response = Response;
     type Error = Error;
-    type Future = FutureResult<Response, Error>;
+    type Future = FutureResponse;
 
     fn call(&self, req: Request) -> Self::Future {
         // method error
@@ -71,7 +71,7 @@ where
                 new_path.push('?');
                 new_path.push_str(query);
             }
-            return future::ok(
+            return box_ok(
                 Response::new()
                     .with_status(StatusCode::MovedPermanently)
                     .with_header(header::Location::new(new_path)),
@@ -80,7 +80,7 @@ where
         if !self.config().get_show_index() {
             match fs::read_dir(&self.index) {
                 Ok(_) => {
-                    return future::ok(Response::new());
+                    return box_ok(Response::new());
                 }
                 Err(e) => {
                     return self.handler.call(e, req);
@@ -111,10 +111,8 @@ where
             delta_modified.subsec_nanos()
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
-            if !etags.is_empty() {
-                if etag == etags[0] {
-                    return future::ok(Response::new().with_status(StatusCode::NotModified));
-                }
+            if !etags.is_empty() && etag == etags[0] {
+                return box_ok(Response::new().with_status(StatusCode::NotModified));
             }
         }
 
@@ -147,7 +145,7 @@ where
             Method::Head => {}
             _ => unreachable!(),
         }
-        future::ok(res)
+        box_ok(res)
     }
 }
 

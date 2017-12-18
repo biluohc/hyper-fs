@@ -1,6 +1,7 @@
-use futures::future::{self, FutureResult};
 use hyper::server::{Request, Response};
 use hyper::{Error, StatusCode};
+
+use super::{box_err, box_ok, FutureResponse};
 
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::fmt;
@@ -36,25 +37,25 @@ pub struct ExceptionHandler;
 
 /// handle `Exception` and `return` `Response` if it occurs.
 pub trait ExceptionHandlerService: fmt::Debug {
-    fn call<E>(&self, e: E, req: Request) -> FutureResult<Response, Error>
+    fn call<E>(&self, e: E, req: Request) -> FutureResponse
     where
         E: Into<Exception>;
 }
 
 impl ExceptionHandlerService for ExceptionHandler {
-    fn call<E>(&self, e: E, _req: Request) -> FutureResult<Response, Error>
+    fn call<E>(&self, e: E, _req: Request) -> FutureResponse
     where
         E: Into<Exception>,
     {
         use Exception::*;
         match e.into() {
             Io(i) => match i.kind() {
-                IoErrorKind::NotFound => future::ok(Response::new().with_status(StatusCode::NotFound)),
-                IoErrorKind::PermissionDenied => future::ok(Response::new().with_status(StatusCode::Forbidden)),
-                _ => future::err(Error::Io(i)),
+                IoErrorKind::NotFound => box_ok(Response::new().with_status(StatusCode::NotFound)),
+                IoErrorKind::PermissionDenied => box_ok(Response::new().with_status(StatusCode::Forbidden)),
+                _ => box_err(Error::Io(i)),
             },
-            Method => future::ok(Response::new().with_status(StatusCode::MethodNotAllowed)),
-            Typo | Route => future::ok(Response::new().with_status(StatusCode::InternalServerError)),
+            Method => box_ok(Response::new().with_status(StatusCode::MethodNotAllowed)),
+            Typo | Route => box_ok(Response::new().with_status(StatusCode::InternalServerError)),
         }
     }
 }

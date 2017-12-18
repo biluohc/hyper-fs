@@ -1,4 +1,3 @@
-use futures::future::FutureResult;
 use hyper::server::{Request, Response, Service};
 use hyper::{Error, Method};
 use futures_cpupool::CpuPool;
@@ -6,8 +5,8 @@ use tokio_core::reactor::Handle;
 use url::percent_encoding::percent_decode;
 
 use super::{Exception, ExceptionHandler, ExceptionHandlerService};
-use super::StaticIndex;
-use super::StaticFile;
+use super::{StaticFile, StaticIndex};
+use super::FutureResponse;
 use super::Config;
 
 use std::path::{Path, PathBuf};
@@ -68,7 +67,7 @@ where
     type Request = Request;
     type Response = Response;
     type Error = Error;
-    type Future = FutureResult<Response, Error>;
+    type Future = FutureResponse;
     fn call(&self, req: Request) -> Self::Future {
         // method error
         match *req.method() {
