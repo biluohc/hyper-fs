@@ -149,7 +149,7 @@ where
 
 fn render_html(index: &PathBuf, path: &str, config: &Config) -> io::Result<String> {
     let path_dec = percent_decode(path.as_bytes()).decode_utf8().unwrap();
-    debug!("\nreq: {:?}\ndec: {:?}",path, path_dec);
+    debug!("\nreq: {:?}\ndec: {:?}", path, path_dec);
     let mut html = format!(
         "
 <!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">

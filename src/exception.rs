@@ -44,7 +44,7 @@ impl Service for ExceptionHandler {
                 IoErrorKind::PermissionDenied => future::ok(Response::new().with_status(StatusCode::Forbidden)),
                 _ => future::err(Error::Io(e)),
             },
-            None => future::ok(Response::new().with_status(StatusCode::BadRequest)),
+            None => future::ok(Response::new().with_status(StatusCode::MethodNotAllowed)),
         }
     }
 }

@@ -24,18 +24,20 @@ pub struct StaticFs<C, EH = ExceptionHandler> {
 }
 
 impl<C: AsRef<Config> + Clone> StaticFs<C, ExceptionHandler> {
-    pub fn new<P>(handle: Handle, pool: CpuPool, url: P, path: P, config: C) -> Self
+    pub fn new<P0, P1>(handle: Handle, pool: CpuPool, url: P0, path: P1, config: C) -> Self
     where
-        P: Into<PathBuf>,
+        P0: Into<PathBuf>,
+        P1: Into<PathBuf>,
     {
         Self::with_handler(handle, pool, url, path, config, ExceptionHandler::default())
     }
 }
 
 impl<C: AsRef<Config> + Clone, EH: ExceptionCatcher> StaticFs<C, EH> {
-    pub fn with_handler<P>(handle: Handle, pool: CpuPool, url: P, path: P, config: C, handler: EH) -> Self
+    pub fn with_handler<P0, P1>(handle: Handle, pool: CpuPool, url: P0, path: P1, config: C, handler: EH) -> Self
     where
-        P: Into<PathBuf>,
+        P0: Into<PathBuf>,
+        P1: Into<PathBuf>,
     {
         Self {
             url: url.into(),
