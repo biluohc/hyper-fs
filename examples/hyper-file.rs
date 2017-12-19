@@ -37,16 +37,15 @@ fn main() {
         .pool_size(2)
         .name_prefix("hyper-fs")
         .create();
-    let config =Rc::new(Config::new().cache_secs(0));
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let listener = TcpListener::bind(&addr, &handle).unwrap();
+    let file = Rc::new(StaticFile::new(handle.clone(), pool, file, Config::new().cache_secs(0)));
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        let file_server = StaticFile::new(handle.clone(), pool.clone(), &file, config.clone());
-        http.bind_connection(&handle, socket, addr, file_server);
+        http.bind_connection(&handle, socket, addr, file.clone());
         Ok(())
     });
     println!("Listening on http://{} with 1 thread.", addr);

@@ -97,17 +97,19 @@ where
         match metadata {
             Ok(md) => {
                 let config = self.config.clone();
-                if md.is_dir() {
-                    StaticIndex::with_handler(fspath, config, self.handler.clone()).call(req)
-                } else {
-                    StaticFile::with_handler(
+                if md.is_file() {
+                        StaticFile::with_handler(
                         self.handle.clone(),
                         self.pool.clone(),
                         fspath,
                         config,
                         self.handler.clone(),
-                    ).call(req)
-                }
+                    ).call(req)         
+                } else if md.is_dir() {
+                    StaticIndex::with_handler(fspath, config, self.handler.clone()).call(req)
+                } else {
+                    self.handler.call(Exception::Typo, req)
+                }   
             }
             Err(e) => self.handler.call(e, req),
         }

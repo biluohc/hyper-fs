@@ -41,11 +41,11 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let listener = TcpListener::bind(&addr, &handle).unwrap();
+    let fs =Rc::new(StaticFs::new(handle.clone(), pool, "/", &file, config));
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        let fs_server = StaticFs::new(handle.clone(), pool.clone(), "/", &file, config.clone());
-        http.bind_connection(&handle, socket, addr, fs_server);
+        http.bind_connection(&handle, socket, addr, fs.clone());
         Ok(())
     });
     println!("Listening on http://{} with 1 thread.", addr);
