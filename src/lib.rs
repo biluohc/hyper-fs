@@ -11,6 +11,7 @@ extern crate walkdir;
 use futures::future::{self, FutureResult};
 use hyper::{Error, Response};
 
+/// `Box<FutureResult<Response, Error>>`
 pub type FutureResponse = Box<FutureResult<Response, Error>>;
 
 #[doc(hidden)]
@@ -26,10 +27,12 @@ pub(crate) mod exception;
 pub(crate) mod static_file;
 pub(crate) mod static_index;
 pub(crate) mod static_fs;
+pub(crate) mod static_fs2;
 pub(crate) mod config;
 
 pub use exception::{Exception, ExceptionHandler, ExceptionHandlerService};
 pub use static_index::StaticIndex;
 pub use static_file::StaticFile;
 pub use static_fs::StaticFs;
+pub use static_fs2::StaticFs2;
 pub use config::Config;

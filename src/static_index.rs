@@ -15,7 +15,7 @@ use std::time;
 use std::fs;
 
 // use Template engine? too heavy...
-/// Simple html list the name of every entry for a index
+/// Static Index: Simple html list the name of every entry for a index
 pub struct StaticIndex<C, EH = ExceptionHandler> {
     index: PathBuf,
     config: C,

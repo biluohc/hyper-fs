@@ -16,9 +16,7 @@ use std::fs::{self, File, Metadata};
 use std::path::PathBuf;
 use std::time;
 
-/// Return a `Response` from a `File`
-///
-/// Todo: HTTP Bytes
+/// Static File
 pub struct StaticFile<C, EH = ExceptionHandler> {
     handle: Handle,
     pool: CpuPool,

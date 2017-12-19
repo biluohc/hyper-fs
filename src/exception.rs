@@ -32,6 +32,9 @@ impl Into<Exception> for io::Error {
     }
 }
 
+/// Default `ExceptionHandler`
+///
+/// You can impl `ExceptionHandlerService` for your owner type, and use it by `with_handler`.
 #[derive(Default, Debug, Clone)]
 pub struct ExceptionHandler;
 

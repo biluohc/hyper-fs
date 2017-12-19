@@ -14,11 +14,11 @@ use tokio_core::reactor::Handle;
 use tokio_core::net::TcpListener;
 use futures::Stream;
 use hyper::server::{Http, Request, Response, Service};
-use hyper::Error;
+use hyper::{header, StatusCode, Error};
 
 extern crate hyper_fs;
 extern crate num_cpus;
-use hyper_fs::{Config, StaticFs, StaticIndex, FutureResponse};
+use hyper_fs::{Config, StaticFs, FutureResponse, box_ok};
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -116,14 +116,16 @@ impl  Service for Doge
     fn call(&self, req: Request) -> Self::Future { 
         let path = req.path().to_owned();
         // /doc
-        if self.inner.doc.is_some()&&path.as_str() =="/doc" {
-            StaticIndex::new(self.inner.doc.as_ref().unwrap(), self.inner.config.clone()).call(req)
-        } else if self.inner.doc.is_some()&& path.starts_with("/doc/")  {
+         if self.inner.doc.is_some()&& (path.starts_with("/doc/") || path.as_str() =="/doc") {
             StaticFs::new(self.inner.handle.clone(), self.inner.pool.clone(),"/doc/", self.inner.doc.as_ref().unwrap(),self.inner.config.clone()).call(req)
 
         // /rust
         } else if self.inner.rust.is_some()&& path.as_str()=="/rust" {
-            StaticIndex::new(self.inner.rust.as_ref().unwrap(), self.inner.config.clone()).call(req)
+            return box_ok(
+                Response::new()
+                    .with_status(StatusCode::MovedPermanently)
+                    .with_header(header::Location::new("/rust/index.html")),
+            );
         } else if self.inner.rust.is_some()&& path.starts_with("/rust/")  {
             StaticFs::new(self.inner.handle.clone(), self.inner.pool.clone(),"/rust/", self.inner.rust.as_ref().unwrap(),self.inner.config.clone()).call(req)
         }

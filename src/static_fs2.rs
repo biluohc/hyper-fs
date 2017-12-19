@@ -11,9 +11,11 @@ use super::Config;
 
 use std::path::PathBuf;
 
-/// Static File System
+/// Static File System2
+///
+///Can hanle file system path contains url_encoding_chars(%20, etc) rather than `StaticFs`
 // Todu: full test...
-pub struct StaticFs<C, EH = ExceptionHandler> {
+pub struct StaticFs2<C, EH = ExceptionHandler> {
     url: String,   // http's base path
     path: PathBuf, // Fs's base path
     handle: Handle,
@@ -22,7 +24,7 @@ pub struct StaticFs<C, EH = ExceptionHandler> {
     handler: EH,
 }
 
-impl<C> StaticFs<C, ExceptionHandler>
+impl<C> StaticFs2<C, ExceptionHandler>
 where
     C: AsRef<Config> + Clone,
 {
@@ -35,7 +37,7 @@ where
     }
 }
 
-impl<C, EH> StaticFs<C, EH>
+impl<C, EH> StaticFs2<C, EH>
 where
     C: AsRef<Config> + Clone,
     EH: ExceptionHandlerService + Clone,
@@ -59,7 +61,7 @@ where
     }
 }
 
-impl<C, EH> Service for StaticFs<C, EH>
+impl<C, EH> Service for StaticFs2<C, EH>
 where
     C: AsRef<Config> + Clone,
     EH: ExceptionHandlerService + Clone,
@@ -74,18 +76,14 @@ where
             Method::Head | Method::Get => {}
             _ => return self.handler.call(Exception::Method, req),
         }
-        let req_path = percent_decode(req.path().as_bytes())
-            .decode_utf8()
-            .unwrap()
-            .into_owned(); // path() is str?, so safe?
         debug!(
             "\nurl : {:?}\npath: {:?}\nreqRaw: {:?}\nreqDec: {:?}",
             self.url,
             self.path,
             req.path(),
-            req_path,
+            route(req.path(), &self.url, &self.path),
         );
-        let fspath = match route(&req_path, &self.url, &self.path) {
+        let fspath = match route(req.path(), &self.url, &self.path) {
             Some(p) => p,
             None => {
                 return self.handler.call(Exception::Route, req);
@@ -147,13 +145,44 @@ fn route(p: &str, base: &str, path: &PathBuf) -> Option<PathBuf> {
                 }
             }
             (Some(c), None) => {
-                let mut out = path.clone();
-                out.push(c);
-                components2.for_each(|cc| out.push(cc));
-                return Some(out);
+                let mut components3 = vec![c];
+                components2.for_each(|cc| components3.push(cc));
+                return try_match(components3, path);
             }
             (None, None) => return Some(path.clone()),
             (None, Some(_)) => return None,
         }
     }
+}
+
+fn try_match(components: Vec<&str>, path: &PathBuf) -> Option<PathBuf> {
+    let mut maybe = components
+        .as_slice()
+        .iter()
+        .fold(path.clone(), |mut out, c| {
+            out.push(c);
+            out
+        });
+    if maybe.exists() {
+        return Some(maybe);
+    }
+    (0..components.len()).into_iter().for_each(|_| {
+        maybe.pop();
+    });
+    let mut out = maybe;
+    for c in components {
+        let cdec = percent_decode(c.as_bytes())
+            .decode_utf8()
+            .unwrap()
+            .into_owned();
+        out.push(cdec);
+        if !out.exists() {
+            out.pop();
+            out.push(c);
+            if !out.exists() {
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
