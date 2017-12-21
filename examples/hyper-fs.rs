@@ -34,7 +34,7 @@ fn main() {
     let pool = Builder::new().pool_size(3).name_prefix("hyper-fs").create();
     let config = Arc::new(
         Config::new()
-            .cache_secs(60)
+            // .cache_secs(60)
             .follow_links(true)
             .show_index(true), // .chunk_size(8196)
     );

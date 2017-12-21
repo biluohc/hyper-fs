@@ -3,7 +3,7 @@ use hyper::server::{Request, Response};
 
 #[allow(unused_imports)]
 use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
-use url::percent_encoding::{percent_decode, utf8_percent_encode, DEFAULT_ENCODE_SET};
+use url::percent_encoding::{percent_decode, percent_encode_byte};
 use futures_cpupool::{CpuFuture, CpuPool};
 use futures::{Future, Poll};
 
@@ -234,13 +234,11 @@ fn is_hidden(entry: &DirEntry) -> bool {
 #[inline]
 fn entries_render(entry: DirEntry, html: &mut String) {
     let mut name = entry.file_name().to_string_lossy().into_owned();
+    let mut name_dec = name.bytes().map(percent_encode_byte).collect::<String>();
     if entry.file_type().is_dir() {
         name.push('/');
+        name_dec.push('/');
     }
-    let li = format!(
-        "<li><a href=\"{}\">{}</a></li>",
-        utf8_percent_encode(&name, DEFAULT_ENCODE_SET),
-        name
-    );
+    let li = format!("<li><a href=\"{}\">{}</a></li>", name_dec, name);
     html.push_str(&li);
 }

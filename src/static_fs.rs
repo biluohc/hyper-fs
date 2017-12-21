@@ -131,84 +131,53 @@ where
 }
 
 fn route(p: &str, base: &str, path: &PathBuf) -> Result<PathBuf, Exception> {
-    let mut components = p.split('/')
+    let pdec = percent_decode(p.as_bytes())
+        .decode_utf8()
+        .unwrap()
+        .into_owned()
+        .to_owned();
+    debug!("{}", pdec);
+    let mut components = pdec.split('/')
         .filter(|c| !c.is_empty())
-        .map(|c| {
-            (
-                c,
-                true,
-                percent_decode(c.as_bytes())
-                    .decode_utf8()
-                    .unwrap()
-                    .into_owned()
-                    .to_owned(),
-            )
-        })
+        .map(|c| (c, true))
         .collect::<Vec<_>>();
     (0..components.len())
         .into_iter()
         .rev()
         .for_each(|idx| match components[idx].0 {
-            "." => {
-                components[idx].1 = false;
-            }
             ".." => {
                 components[idx].1 = false;
                 if idx > 0 {
                     components[idx - 1].1 = false;
                 }
             }
+            "." => {
+                components[idx].1 = false;
+            }
             _ => {}
         });
 
     let mut base_components = base.split('/').filter(|c| !c.is_empty());
-    let mut components2 = components.into_iter().filter(|c| c.1).map(|c| (c.0, c.2));
+    let mut components2 = components.into_iter().filter(|c| c.1).map(|c| c.0);
     loop {
         match (components2.next(), base_components.next()) {
             (Some(c), Some(b)) => {
-                if c.1 != b {
+                if c != b {
                     return Err(Exception::Route);
                 }
             }
             (Some(c), None) => {
-                let mut components3 = vec![c];
-                components2.for_each(|cc| components3.push(cc));
-                return try_match(components3, path);
+                let mut out = path.clone();
+                out.push(c);
+                components2.for_each(|cc| out.push(cc));
+                if out.exists() {
+                    return Ok(out);
+                } else {
+                    return Err(Exception::not_found());
+                }
             }
             (None, None) => return Ok(path.clone()),
             (None, Some(_)) => return Err(Exception::Route),
         }
     }
-}
-// "下密密麻麻密密麻麻z  zmm 说%2C%20%2C%E5%92%8C%E6%B2%A1"
-// can not handle Fs's path like above now...
-fn try_match(components: Vec<(&str, String)>, path: &PathBuf) -> Result<PathBuf, Exception> {
-    let mut maybe = components
-        .as_slice()
-        .iter()
-        .fold(path.clone(), |mut out, c| {
-            out.push(&c.1);
-            out
-        });
-
-    if maybe.exists() {
-        return Ok(maybe);
-    }
-
-    (0..components.len()).into_iter().for_each(|_| {
-        maybe.pop();
-    });
-
-    let mut out = maybe;
-    for c in components {
-        out.push(&c.1);
-        if !out.exists() {
-            out.pop();
-            out.push(c.0);
-            if !out.exists() {
-                return Err(Exception::not_found());
-            }
-        }
-    }
-    Ok(out)
 }
