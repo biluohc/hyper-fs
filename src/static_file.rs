@@ -1,75 +1,146 @@
 use futures::{Async, Future, Poll, Sink, Stream};
-use futures::sync::mpsc::SendError;
+use futures::sync::mpsc::{SendError, Sender};
 use hyper::{header, Body, Chunk, Error, Headers, Method, StatusCode};
-use hyper::server::{Request, Response, Service};
+use hyper::server::{Request, Response};
 
 use bytes::{BufMut, BytesMut};
 use futures_cpupool::{CpuFuture, CpuPool};
 use tokio_core::reactor::Handle;
 
 use super::{Exception, ExceptionHandler, ExceptionHandlerService};
-use super::{box_ok, FutureResponse};
+use super::FutureObject;
 use super::Config;
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::fs::{self, File, Metadata};
 use std::path::PathBuf;
-use std::time;
+use std::{mem, time};
 
 /// Static File
-pub struct StaticFile<C, EH = ExceptionHandler> {
+pub struct StaticFile<C, EH> {
+    inner: Option<Inner<C, EH>>,
+    content: Option<CpuFuture<(Response, Option<SendAllCallBackBox>), Error>>,
     handle: Handle,
+}
+
+trait SendAll {
+    fn send_all(self, handle: &Handle);
+}
+
+trait SendAllCallBack {
+    fn send_all_call_back(self: Box<Self>, handle: &Handle);
+}
+impl<T: SendAll> SendAllCallBack for T {
+    fn send_all_call_back(self: Box<Self>, handle: &Handle) {
+        (*self).send_all(handle)
+    }
+}
+type SendAllCallBackBox = Box<SendAllCallBack + Send + 'static>;
+
+type HeaderMaker = FnMut(&mut File, &Metadata, &PathBuf, &Request, &mut header::Headers) -> io::Result<()> + Send + 'static;
+
+pub struct Inner<C, EH = ExceptionHandler> {
     pool: CpuPool,
     file: PathBuf,
     config: C,
     handler: EH,
+    headers: Option<header::Headers>,
+    header_maker: Option<Box<HeaderMaker>>,
 }
 
 impl<C, EH> StaticFile<C, EH>
 where
-    C: AsRef<Config>,
-    EH: ExceptionHandlerService,
+    C: AsRef<Config> + Send,
+    EH: ExceptionHandlerService + Send + 'static,
 {
     pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C, handler: EH) -> Self {
-        Self {
-            handle: handle,
+        let inner = Inner {
             pool: pool,
             file: file.into(),
-            handler: handler,
             config: config,
+            handler: handler,
+            headers: Some(header::Headers::new()),
+            header_maker: None,
+        };
+        Self {
+            inner: Some(inner),
+            content: None,
+            handle: handle,
         }
     }
-    pub fn config(&self) -> &Config {
-        self.config.as_ref()
+    ///  You should seek to 0 if you modify the File(Read or seek), You could not write or append it.
+    ///
+    ///  The `FnMut` will being calling before 200 when Get method(If Range or 304 status, it will not be calling).
+    ///
+    ///  You could set `Content-Type`, `Charset`, etc ...
+    ///
+    //   Warning: do not modify `Content-Length`, 'ETag', etc(Already in `Headers`)
+    pub fn headers_maker<M>(&mut self, maker: M)
+    where
+        M: FnMut(&mut File, &Metadata, &PathBuf, &Request, &mut header::Headers) -> io::Result<()> + Send + 'static,
+    {
+        self.inner.as_mut().unwrap().header_maker = Some(Box::new(maker))
+    }
+    /// You can set the init `Haeders`
+    ///
+    /// Warning: not being covered by inner code.
+    pub fn headers_mut(&mut self) -> &mut Option<Headers> {
+        &mut self.inner.as_mut().unwrap().headers
     }
 }
+
 impl<C> StaticFile<C, ExceptionHandler>
 where
-    C: AsRef<Config>,
+    C: AsRef<Config> + Send,
 {
     pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
         Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
     }
 }
-impl<C, EH> Service for StaticFile<C, EH>
+
+impl<C, EH> Future for StaticFile<C, EH> {
+    type Item = Response;
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Response, Error> {
+        match self.content
+            .as_mut()
+            .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
+            .poll()
+        {
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Ok(Async::Ready((response, Some(t)))) => {
+                t.send_all_call_back(&self.handle);
+                Ok(Async::Ready(response))
+            }
+            Ok(Async::Ready((response, None))) => Ok(Async::Ready(response)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl<C, EH> StaticFile<C, EH>
+where
+    C: AsRef<Config> + Send + 'static,
+    EH: ExceptionHandlerService + Send + 'static,
+{
+    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
+        let inner = mem::replace(&mut self.inner, None).expect("Call twice");
+        self.content = Some(pool.spawn_fn(move || inner.call(req)));
+        Box::new(self)
+    }
+}
+
+impl<C, EH> Inner<C, EH>
 where
     C: AsRef<Config>,
     EH: ExceptionHandlerService,
 {
-    type Request = Request;
-    type Response = Response;
-    type Error = Error;
-    type Future = FutureResponse;
-
-    fn call(&self, mut req: Request) -> Self::Future {
-        let mut headers = Headers::new();
+    pub fn config(&self) -> &Config {
+        self.config.as_ref()
+    }
+    fn call(mut self, mut req: Request) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
+        let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         headers.set(header::AcceptRanges(vec![header::RangeUnit::Bytes]));
-        // method error
-        match *req.method() {
-            Method::Head | Method::Get => {}
-            _ => return self.handler.call(Exception::Method, req),
-        }
-
         if self.config().cache_secs != 0 {
             headers.set(header::CacheControl(vec![
                 header::CacheDirective::Public,
@@ -77,16 +148,21 @@ where
             ]));
         }
 
+        // method error
+        match *req.method() {
+            Method::Head | Method::Get => {}
+            _ => return self.handler.call(Exception::Method, req).map(|r| (r, None)),
+        }
         // io error
         let metadata = match fs::metadata(&self.file) {
             Ok(metada) => {
                 if !metada.is_file() {
-                    return self.handler.call(Exception::Typo, req);
+                    return self.handler.call(Exception::Typo, req).map(|r| (r, None));
                 }
                 metada
             }
             Err(e) => {
-                return self.handler.call(e, req);
+                return self.handler.call(e, req).map(|r| (r, None));
             }
         };
 
@@ -106,18 +182,18 @@ where
                 new_path.push_str(query);
             }
             headers.set(header::Location::new(new_path));
-            return box_ok(
+            return Ok((
                 Response::new()
                     .with_status(StatusCode::MovedPermanently)
                     .with_headers(headers),
-            );
+                None,
+            ));
         }
-
         // HTTP Last-Modified
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                return self.handler.call(e, req);
+                return self.handler.call(e, req).map(|r| (r, None));
             }
         };
         let delta_modified = last_modified
@@ -154,11 +230,12 @@ where
             // 304
             if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
                 if !etags.is_empty() && etag == etags[0] {
-                    return box_ok(
+                    return Ok((
                         Response::new()
                             .with_headers(headers)
                             .with_status(StatusCode::NotModified),
-                    );
+                        None,
+                    ));
                 }
             }
             (req, headers)
@@ -171,33 +248,45 @@ where
         // response body  stream
         match *req.method() {
             Method::Get => {
-                let file = match File::open(&self.file) {
+                let mut file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return self.handler.call(e, req);
+                        return self.handler.call(e, req).map(|r| (r, None));
                     }
                 };
+                if self.header_maker.is_some() {
+                    let mut maker = mem::replace(&mut self.header_maker, None).unwrap();
+                    if let Err(e) = maker(
+                        &mut file,
+                        &metadata,
+                        &self.file,
+                        &req,
+                        &mut res.headers_mut(),
+                    ) {
+                        return self.handler.call(e, req).map(|r| (r, None));
+                    }
+                    // have to reset seek if moved...
+                }
+
                 let (sender, body) = Body::pair();
-                self.handle.spawn(
-                    sender
-                        .send_all(FileChunkStream::new(
-                            &self.pool,
-                            file,
-                            *self.config().get_chunk_size(),
-                        ))
-                        .map(|_| ())
-                        .map_err(|_| ()),
-                );
                 res.set_body(body);
+                Ok((
+                    res,
+                    Some(Box::new(FileChunkStream::new(
+                        &self.pool,
+                        sender,
+                        file,
+                        *self.config().get_chunk_size(),
+                    )) as SendAllCallBackBox),
+                ))
             }
-            Method::Head => {}
+            Method::Head => Ok((res, None)),
             _ => unreachable!(),
         }
-        box_ok(res)
     }
 }
 
-impl<C, EH> StaticFile<C, EH>
+impl<C, EH> Inner<C, EH>
 where
     C: AsRef<Config>,
     EH: ExceptionHandlerService,
@@ -211,7 +300,7 @@ where
         last_modified: &time::SystemTime,
         delta_modified: &time::Duration,
         etag: &header::EntityTag,
-    ) -> Result<FutureResponse, (Request, header::Headers)> {
+    ) -> Result<Result<(Response, Option<SendAllCallBackBox>), Error>, (Request, header::Headers)> {
         let valid_ranges: Vec<_> = ranges
             .as_slice()
             .iter()
@@ -230,11 +319,12 @@ where
             Some(not_modified) => {
                 match (not_modified, valid_ranges.len() == ranges.len()) {
                     (true, true) => Ok(self.build_range_response(valid_ranges, metadata, req, headers)),
-                    (true, false) => Ok(box_ok(
+                    (true, false) => Ok(Ok((
                         Response::new()
                             .with_headers(headers)
                             .with_status(StatusCode::NotModified),
-                    )),
+                        None,
+                    ))),
                     (false, _) => {
                         // 200
                         Err((req, headers))
@@ -243,18 +333,25 @@ where
             }
             None => {
                 if valid_ranges.len() != ranges.len() {
-                    Ok(box_ok(
+                    Ok(Ok((
                         Response::new()
                             .with_headers(headers)
                             .with_status(StatusCode::RangeNotSatisfiable),
-                    ))
+                        None,
+                    )))
                 } else {
                     Ok(self.build_range_response(valid_ranges, metadata, req, headers))
                 }
             }
         }
     }
-    fn build_range_response(&self, valid_ranges: Vec<(u64, u64)>, metadata: &Metadata, req: Request, mut headers: header::Headers) -> FutureResponse {
+    fn build_range_response(
+        &self,
+        valid_ranges: Vec<(u64, u64)>,
+        metadata: &Metadata,
+        req: Request,
+        mut headers: header::Headers,
+    ) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
         let content_length = valid_ranges
             .as_slice()
             .iter()
@@ -283,27 +380,32 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return self.handler.call(e, req);
+                        return self.handler.call(e, req).map(|r| (r, None));
                     }
                 };
                 let (sender, body) = Body::pair();
-                self.handle.spawn(
-                    sender
-                        .send_all(FileRangeChunkStream::new(
-                            &self.pool,
-                            file,
-                            valid_ranges,
-                            *self.config().get_chunk_size(),
-                        ))
-                        .map(|_| ())
-                        .map_err(|_| ()),
-                );
                 res.set_body(body);
+                Ok((
+                    res,
+                    Some(Box::new(FileRangeChunkStream::new(
+                        &self.pool,
+                        sender,
+                        file,
+                        valid_ranges,
+                        *self.config().get_chunk_size(),
+                    )) as SendAllCallBackBox),
+                ))
             }
-            Method::Head => {}
+            Method::Head => Ok((res, None)),
             _ => unreachable!(),
         }
-        box_ok(res)
+    }
+}
+
+impl SendAll for FileChunkStream {
+    fn send_all(mut self, handle: &Handle) {
+        let sender = mem::replace(&mut self.sender, None).unwrap();
+        handle.spawn(sender.send_all(self).map(|_| ()).map_err(|_| ()));
     }
 }
 
@@ -312,14 +414,16 @@ struct FileChunkStream {
     inner: CpuFuture<OptionFileChunk, Error>,
     pool: CpuPool,
     chunk_size: usize,
+    sender: Option<Sender<Result<Chunk, Error>>>,
 }
 impl FileChunkStream {
-    fn new(pool: &CpuPool, file: File, chunk_size: usize) -> Self {
+    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, Error>>, file: File, chunk_size: usize) -> Self {
         let chunk = pool.spawn_fn(move || read_a_chunk(file, chunk_size));
         FileChunkStream {
             inner: chunk,
             chunk_size: chunk_size,
             pool: pool.clone(),
+            sender: Some(sender),
         }
     }
 }
@@ -356,21 +460,30 @@ fn read_a_chunk(mut file: File, chunk_size: usize) -> Result<OptionFileChunk, Er
     }
 }
 
+impl SendAll for FileRangeChunkStream {
+    fn send_all(mut self, handle: &Handle) {
+        let sender = mem::replace(&mut self.sender, None).unwrap();
+        handle.spawn(sender.send_all(self).map(|_| ()).map_err(|_| ()));
+    }
+}
+
 type OptionFileRangeChunk = Option<(File, Vec<(u64, u64)>, Chunk)>;
 
 struct FileRangeChunkStream {
     inner: CpuFuture<OptionFileRangeChunk, Error>,
     pool: CpuPool,
     chunk_size: usize,
+    sender: Option<Sender<Result<Chunk, Error>>>,
 }
 
 impl FileRangeChunkStream {
-    fn new(pool: &CpuPool, file: File, ranges: Vec<(u64, u64)>, chunk_size: usize) -> Self {
+    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, Error>>, file: File, ranges: Vec<(u64, u64)>, chunk_size: usize) -> Self {
         let chunk = pool.spawn_fn(move || read_a_range_chunk(file, ranges, chunk_size));
         FileRangeChunkStream {
             inner: chunk,
             chunk_size: chunk_size,
             pool: pool.clone(),
+            sender: Some(sender),
         }
     }
 }
@@ -396,15 +509,21 @@ fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: u
     if ranges.is_empty() {
         return Ok(None);
     }
-    let mut buf = BytesMut::new();
+    let range_size = (ranges[0].1 - ranges[0].0 + 1) as usize;
+    let cap = if range_size <= chunk_size {
+        range_size
+    } else {
+        chunk_size
+    };
+    let mut buf = BytesMut::with_capacity(cap);
     let mut count = 0;
 
     while count < chunk_size {
         let start = ranges[0].0;
-        let _range_size = (ranges[0].1 - ranges[0].0 + 1) as usize;
-        let reserve_size = if _range_size <= chunk_size {
+        let range_size = (ranges[0].1 - ranges[0].0 + 1) as usize;
+        let reserve_size = if range_size <= chunk_size {
             ranges.remove(0);
-            _range_size
+            range_size
         } else {
             ranges[0].0 += chunk_size as u64;
             chunk_size

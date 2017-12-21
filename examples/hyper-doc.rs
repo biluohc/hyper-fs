@@ -6,21 +6,21 @@ extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
 extern crate url;
+extern crate num_cpus;
 
 use mxo_env_logger::*;
 use futures_cpupool::{Builder,CpuPool};
-use tokio_core::reactor::Core;
-use tokio_core::reactor::Handle;
+use tokio_core::reactor::{Core,Handle};
 use tokio_core::net::TcpListener;
-use futures::Stream;
+use futures::{future,Stream};
 use hyper::server::{Http, Request, Response, Service};
 use hyper::{header, StatusCode, Error};
 
 extern crate hyper_fs;
-extern crate num_cpus;
-use hyper_fs::{Config, StaticFs, FutureResponse, box_ok};
+use hyper_fs::{Config, StaticFs, FutureObject};
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::rc::Rc;
 use std::env;
 use std::fs;
@@ -33,13 +33,8 @@ fn main() {
         .unwrap_or(8000u16);
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
 
-    let pool = Builder::new().pool_size(2).name_prefix("hyper-fs").create();
-    let config = Rc::new(
-        Config::new()
-            .cache_secs(60)
-            .follow_links(true)
-            .show_index(true),
-    );
+    let pool = Builder::new().pool_size(3).name_prefix("hyper-fs").create();
+    let config = Config::new().cache_secs(60).follow_links(true).show_index(true);
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -62,14 +57,15 @@ pub struct DogeInner {
     path: PathBuf, // default: ./
     pool:CpuPool,
     handle: Handle,
-    config: Rc<Config>
+    config: Arc<Config>
 }
+
 #[derive(Clone)]
 pub struct Doge{
     inner: Rc<DogeInner>,
 }
 impl Doge {
-    fn new(handle: Handle, pool: CpuPool,  config: Rc<Config>)->Self {
+    fn new(handle: Handle, pool: CpuPool,  config: Config)->Self {
         let doc = PathBuf::from("target/doc");
         let doc = if doc.as_path().is_dir() {
             Some(doc)
@@ -83,7 +79,7 @@ impl Doge {
             path:path,
             pool:pool,
             handle:handle,
-            config:config
+            config:Arc::new(config)
         };
         Doge{
             inner: Rc::new(inner),
@@ -111,7 +107,7 @@ impl  Service for Doge
     type Request = Request;
     type Response = Response;
     type Error = Error;
-    type Future = FutureResponse;
+    type Future = FutureObject;
 
     fn call(&self, req: Request) -> Self::Future { 
         let path = req.path().to_owned();
@@ -121,11 +117,12 @@ impl  Service for Doge
 
         // /rust
         } else if self.inner.rust.is_some()&& path.as_str()=="/rust" {
-            return box_ok(
+            Box::new(
+                future::ok(
                 Response::new()
                     .with_status(StatusCode::MovedPermanently)
                     .with_header(header::Location::new("/rust/index.html")),
-            );
+            ))
         } else if self.inner.rust.is_some()&& path.starts_with("/rust/")  {
             StaticFs::new(self.inner.handle.clone(), self.inner.pool.clone(),"/rust/", self.inner.rust.as_ref().unwrap(),self.inner.config.clone()).call(req)
         }

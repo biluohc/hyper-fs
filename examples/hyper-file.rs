@@ -1,23 +1,26 @@
 #[macro_use]
 extern crate log;
 extern crate mxo_env_logger;
-use mxo_env_logger::*;
+extern crate tokio_core;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
-extern crate tokio_core;
 extern crate url;
+extern crate num_cpus;
 
-use futures_cpupool::Builder;
-use tokio_core::reactor::{Core};
+use mxo_env_logger::*;
+use futures_cpupool::{Builder,CpuPool};
+use tokio_core::reactor::{Core,Handle};
 use tokio_core::net::TcpListener;
 use futures::{Stream};
-use hyper::server::Http;
+use hyper::server::{Http, Request, Response, Service};
+use hyper::{Error};
 
 extern crate hyper_fs;
-extern crate num_cpus;
-use hyper_fs::{StaticFile,Config};
+use hyper_fs::{Config,FutureObject, StaticFile};
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::rc::Rc;
 use std::env;
 
@@ -29,25 +32,49 @@ fn main() {
         arg.parse::<u16>().ok())      
         .unwrap_or(8000);
     let addr = format!("0.0.0.0:{}", port).parse().unwrap();
-    let file = env::args()
-        .nth(2)
-        .unwrap_or_else(|| "fn.jpg".to_owned());
+    let index = env::args().nth(2).unwrap_or_else(|| ".".to_owned());
 
-    let pool = Builder::new()
-        .pool_size(2)
-        .name_prefix("hyper-fs")
-        .create();
-
+    let pool = Builder::new().pool_size(3).name_prefix("hyper-fs").create();
+    let config = Config::new().cache_secs(60).follow_links(true).show_index(true); // .chunk_size(8196)
+            
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let listener = TcpListener::bind(&addr, &handle).unwrap();
-    let file = Rc::new(StaticFile::new(handle.clone(), pool, file, Config::new().cache_secs(0)));
+    let file_server =Rc::new(FileServer::new(handle.clone(), pool, index, config));
 
     let http = Http::new();
     let server = listener.incoming().for_each(|(socket, addr)| {
-        http.bind_connection(&handle, socket, addr, file.clone());
+        http.bind_connection(&handle, socket, addr, file_server.clone());
         Ok(())
     });
     println!("Listening on http://{} with 1 thread.", addr);
     core.run(server).unwrap();
+}
+
+struct FileServer {
+    handle: Handle,
+    file: PathBuf,
+    pool: CpuPool,
+    config: Arc<Config>,
+}
+impl FileServer {
+    fn new<P:Into<PathBuf>>(handle: Handle, pool: CpuPool, file:P, config: Config)->Self {
+        Self {
+    handle: handle,            
+            file: file.into(),
+            pool:pool,
+            config: Arc::new(config)
+        }
+    }
+}
+
+impl Service for FileServer
+{
+    type Request = Request;
+    type Response = Response;
+    type Error = Error;
+    type Future = FutureObject;
+    fn call(&self, req: Request) -> Self::Future {
+        StaticFile::new(self.handle.clone(), self.pool.clone(), &self.file, self.config.clone()).call(&self.pool, req)
+    }
 }

@@ -1,30 +1,47 @@
 use hyper::{header, Error, Method, StatusCode};
-use hyper::server::{Request, Response, Service};
+use hyper::server::{Request, Response};
+
 #[allow(unused_imports)]
 use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
 use url::percent_encoding::{percent_decode, utf8_percent_encode, DEFAULT_ENCODE_SET};
+use futures_cpupool::{CpuFuture, CpuPool};
+use futures::{Future, Poll};
 
 use super::{Exception, ExceptionHandler, ExceptionHandlerService};
-use super::{box_ok, FutureResponse};
-use super::Config;
+use super::{Config, FutureObject};
 
 #[allow(unused_imports)]
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::path::PathBuf;
-use std::time;
+use std::{mem, time};
 use std::fs;
+
+struct Inner<C, EH = ExceptionHandler> {
+    index: PathBuf,
+    headers: Option<header::Headers>,
+    config: C,
+    handler: EH,
+}
+impl<C, EH> Inner<C, EH>
+where
+    C: AsRef<Config>,
+    EH: ExceptionHandlerService,
+{
+    pub fn config(&self) -> &Config {
+        self.config.as_ref()
+    }
+}
 
 // use Template engine? too heavy...
 /// Static Index: Simple html list the name of every entry for a index
 pub struct StaticIndex<C, EH = ExceptionHandler> {
-    index: PathBuf,
-    config: C,
-    handler: EH,
+    inner: Option<Inner<C, EH>>,
+    content: Option<CpuFuture<Response, Error>>,
 }
 
 impl<C> StaticIndex<C, ExceptionHandler>
 where
-    C: AsRef<Config>,
+    C: AsRef<Config> + Send,
 {
     pub fn new<P: Into<PathBuf>>(index: P, config: C) -> Self {
         Self::with_handler(index, config, ExceptionHandler::default())
@@ -33,31 +50,65 @@ where
 
 impl<C, EH> StaticIndex<C, EH>
 where
-    C: AsRef<Config>,
-    EH: ExceptionHandlerService,
+    C: AsRef<Config> + Send,
+    EH: ExceptionHandlerService + Send + 'static,
 {
     pub fn with_handler<P: Into<PathBuf>>(index: P, config: C, handler: EH) -> Self {
-        Self {
+        let inner = Inner {
             index: index.into(),
+            headers: None,
             config: config,
             handler: handler,
+        };
+        Self {
+            inner: Some(inner),
+            content: None,
         }
     }
-    pub fn config(&self) -> &Config {
-        self.config.as_ref()
+    /// You can set the init `Haeders`
+    ///
+    /// Warning: not being covered by inner code.
+    pub fn headers_mut(&mut self) -> &mut Option<header::Headers> {
+        &mut self.inner.as_mut().unwrap().headers
     }
 }
-impl<C, EH> Service for StaticIndex<C, EH>
+
+impl<C, EH> Future for StaticIndex<C, EH> {
+    type Item = Response;
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Response, Error> {
+        self.content
+            .as_mut()
+            .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
+            .poll()
+    }
+}
+
+impl<C, EH> StaticIndex<C, EH>
+where
+    C: AsRef<Config> + Send + 'static,
+    EH: ExceptionHandlerService + Send + 'static,
+{
+    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
+        let mut inner = mem::replace(&mut self.inner, None).expect("Call twice");
+        self.content = Some(pool.spawn_fn(move || inner.call(req)));
+        Box::new(self)
+    }
+}
+
+impl<C, EH> Inner<C, EH>
 where
     C: AsRef<Config>,
     EH: ExceptionHandlerService,
 {
-    type Request = Request;
-    type Response = Response;
-    type Error = Error;
-    type Future = FutureResponse;
-
-    fn call(&self, req: Request) -> Self::Future {
+    fn call(&mut self, req: Request) -> Result<Response, Error> {
+        let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
+        if self.config().cache_secs != 0 {
+            headers.set(header::CacheControl(vec![
+                header::CacheDirective::Public,
+                header::CacheDirective::MaxAge(self.config().cache_secs),
+            ]));
+        }
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
@@ -71,16 +122,15 @@ where
                 new_path.push('?');
                 new_path.push_str(query);
             }
-            return box_ok(
-                Response::new()
-                    .with_status(StatusCode::MovedPermanently)
-                    .with_header(header::Location::new(new_path)),
-            );
+            headers.set(header::Location::new(new_path));
+            return Ok(Response::new()
+                .with_status(StatusCode::MovedPermanently)
+                .with_headers(headers));
         }
         if !self.config().get_show_index() {
             match fs::read_dir(&self.index) {
                 Ok(_) => {
-                    return box_ok(Response::new());
+                    return Ok(Response::new().with_headers(headers));
                 }
                 Err(e) => {
                     return self.handler.call(e, req);
@@ -112,7 +162,9 @@ where
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
             if !etags.is_empty() && etag == etags[0] {
-                return box_ok(Response::new().with_status(StatusCode::NotModified));
+                return Ok(Response::new()
+                    .with_headers(headers)
+                    .with_status(StatusCode::NotModified));
             }
         }
 
@@ -125,17 +177,10 @@ where
         };
 
         // response Header
-        let mut res = Response::new()
-            .with_header(header::ContentLength(html.len() as u64))
-            .with_header(header::LastModified(http_last_modified))
-            .with_header(header::ETag(etag));
-
-        if self.config().cache_secs != 0 {
-            res.headers_mut().set(header::CacheControl(vec![
-                header::CacheDirective::Public,
-                header::CacheDirective::MaxAge(self.config().cache_secs),
-            ]));
-        }
+        headers.set(header::ContentLength(html.len() as u64));
+        headers.set(header::LastModified(http_last_modified));
+        headers.set(header::ETag(etag));
+        let mut res = Response::new().with_headers(headers);
 
         // response body  stream
         match *req.method() {
@@ -145,7 +190,7 @@ where
             Method::Head => {}
             _ => unreachable!(),
         }
-        box_ok(res)
+        Ok(res)
     }
 }
 
