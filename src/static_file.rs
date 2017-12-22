@@ -48,9 +48,18 @@ pub struct Inner<C, EH = ExceptionHandler> {
     header_maker: Option<Box<HeaderMaker>>,
 }
 
+impl<C> StaticFile<C, ExceptionHandler>
+where
+    C: AsRef<Config> + Send+ 'static,
+{
+    pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
+        Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
+    }
+}
+
 impl<C, EH> StaticFile<C, EH>
 where
-    C: AsRef<Config> + Send,
+    C: AsRef<Config> + Send+ 'static,
     EH: ExceptionHandlerService + Send + 'static,
 {
     pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C, handler: EH) -> Self {
@@ -87,14 +96,10 @@ where
     pub fn headers_mut(&mut self) -> &mut Option<Headers> {
         &mut self.inner.as_mut().unwrap().headers
     }
-}
-
-impl<C> StaticFile<C, ExceptionHandler>
-where
-    C: AsRef<Config> + Send,
-{
-    pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
-        Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
+    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
+        let inner = mem::replace(&mut self.inner, None).expect("Call twice");
+        self.content = Some(pool.spawn_fn(move || inner.call(req)));
+        Box::new(self)
     }
 }
 
@@ -115,18 +120,6 @@ impl<C, EH> Future for StaticFile<C, EH> {
             Ok(Async::Ready((response, None))) => Ok(Async::Ready(response)),
             Err(e) => Err(e),
         }
-    }
-}
-
-impl<C, EH> StaticFile<C, EH>
-where
-    C: AsRef<Config> + Send + 'static,
-    EH: ExceptionHandlerService + Send + 'static,
-{
-    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
-        let inner = mem::replace(&mut self.inner, None).expect("Call twice");
-        self.content = Some(pool.spawn_fn(move || inner.call(req)));
-        Box::new(self)
     }
 }
 

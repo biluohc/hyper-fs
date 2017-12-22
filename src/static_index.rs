@@ -41,7 +41,7 @@ pub struct StaticIndex<C, EH = ExceptionHandler> {
 
 impl<C> StaticIndex<C, ExceptionHandler>
 where
-    C: AsRef<Config> + Send,
+    C: AsRef<Config> + Send + 'static,
 {
     pub fn new<P: Into<PathBuf>>(index: P, config: C) -> Self {
         Self::with_handler(index, config, ExceptionHandler::default())
@@ -50,7 +50,7 @@ where
 
 impl<C, EH> StaticIndex<C, EH>
 where
-    C: AsRef<Config> + Send,
+    C: AsRef<Config> + Send+ 'static,
     EH: ExceptionHandlerService + Send + 'static,
 {
     pub fn with_handler<P: Into<PathBuf>>(index: P, config: C, handler: EH) -> Self {
@@ -71,6 +71,11 @@ where
     pub fn headers_mut(&mut self) -> &mut Option<header::Headers> {
         &mut self.inner.as_mut().unwrap().headers
     }
+    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
+        let mut inner = mem::replace(&mut self.inner, None).expect("Call twice");
+        self.content = Some(pool.spawn_fn(move || inner.call(req)));
+        Box::new(self)
+    }
 }
 
 impl<C, EH> Future for StaticIndex<C, EH> {
@@ -81,18 +86,6 @@ impl<C, EH> Future for StaticIndex<C, EH> {
             .as_mut()
             .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
             .poll()
-    }
-}
-
-impl<C, EH> StaticIndex<C, EH>
-where
-    C: AsRef<Config> + Send + 'static,
-    EH: ExceptionHandlerService + Send + 'static,
-{
-    pub fn call(mut self, pool: &CpuPool, req: Request) -> FutureObject {
-        let mut inner = mem::replace(&mut self.inner, None).expect("Call twice");
-        self.content = Some(pool.spawn_fn(move || inner.call(req)));
-        Box::new(self)
     }
 }
 
