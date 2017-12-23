@@ -75,6 +75,6 @@ impl Service for IndexServer
     type Error = Error;
     type Future = FutureObject;
     fn call(&self, req: Request) -> Self::Future {
-        StaticIndex::new(&self.path, self.config.clone()).call(&self.pool, req)
+        StaticIndex::new(req.path(), &self.path, self.config.clone()).call(&self.pool, req)
     }
 }

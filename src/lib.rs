@@ -16,9 +16,15 @@ pub type FutureObject = Box<Future<Item = Response, Error = Error>>;
 // #[doc(hidden)]
 
 pub(crate) mod exception;
-pub(crate) mod static_file;
-pub(crate) mod static_index;
-pub(crate) mod static_fs;
+#[doc(hidden)]
+#[macro_use]
+pub mod static_file;
+#[doc(hidden)]
+#[macro_use]
+pub mod static_index;
+#[doc(hidden)]
+#[macro_use]
+pub mod static_fs;
 pub(crate) mod config;
 
 pub use exception::{Exception, ExceptionHandler, ExceptionHandlerService, ExceptionHandlerServiceAsync};

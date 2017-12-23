@@ -1,31 +1,47 @@
-use hyper::{header, Error, Method, StatusCode};
-use hyper::server::{Request, Response};
+pub use hyper::{header, Error, Method, StatusCode};
+pub use hyper::server::{Request, Response};
 
 #[allow(unused_imports)]
-use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
-use url::percent_encoding::{percent_decode, percent_encode_byte};
-use futures_cpupool::{CpuFuture, CpuPool};
-use futures::{Future, Poll};
+pub use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
+pub use url::percent_encoding::percent_encode_byte;
+pub use futures_cpupool::{CpuFuture, CpuPool};
+pub use futures::{Future, Poll};
 
-use super::{Exception, ExceptionHandler, ExceptionHandlerService};
-use super::{Config, FutureObject};
+pub use super::{Exception, ExceptionHandlerService};
+pub use super::{Config, FutureObject};
+use super::ExceptionHandler;
 
 #[allow(unused_imports)]
-use std::io::{self, ErrorKind as IoErrorKind};
-use std::path::PathBuf;
-use std::{mem, time};
-use std::fs;
+pub use std::io::{self, ErrorKind as IoErrorKind};
+pub use std::path::PathBuf;
+pub use std::{mem, time};
+pub use std::fs;
 
-struct Inner<C, EH = ExceptionHandler> {
-    index: PathBuf,
+/** create a StaticIndex by owner `ExceptionHandler`.
+
+```rs
+mod local {
+    use hyper_fs::static_index::*;
+    // wait to replace
+    use hyper_fs::ExceptionHandler;
+    static_index!(StaticIndex, ExceptionHandler);
+}
+```
+*/
+#[macro_export]
+macro_rules! static_index {
+    ($typo_index: ident, $typo_exception_handler: ident) => {
+
+struct Inner<C> {
+    title: String,
+    path: PathBuf,
     headers: Option<header::Headers>,
     config: C,
-    handler: EH,
 }
-impl<C, EH> Inner<C, EH>
+
+impl<C> Inner<C>
 where
     C: AsRef<Config>,
-    EH: ExceptionHandlerService,
 {
     pub fn config(&self) -> &Config {
         self.config.as_ref()
@@ -34,31 +50,21 @@ where
 
 // use Template engine? too heavy...
 /// Static Index: Simple html list the name of every entry for a index
-pub struct StaticIndex<C, EH = ExceptionHandler> {
-    inner: Option<Inner<C, EH>>,
+pub struct $typo_index<C> {
+    inner: Option<Inner<C>>,
     content: Option<CpuFuture<Response, Error>>,
 }
 
-impl<C> StaticIndex<C, ExceptionHandler>
+impl<C> $typo_index<C>
 where
     C: AsRef<Config> + Send + 'static,
 {
-    pub fn new<P: Into<PathBuf>>(index: P, config: C) -> Self {
-        Self::with_handler(index, config, ExceptionHandler::default())
-    }
-}
-
-impl<C, EH> StaticIndex<C, EH>
-where
-    C: AsRef<Config> + Send+ 'static,
-    EH: ExceptionHandlerService + Send + 'static,
-{
-    pub fn with_handler<P: Into<PathBuf>>(index: P, config: C, handler: EH) -> Self {
+    pub fn new<S: Into<String>, P: Into<PathBuf>>(title: S, path: P, config: C) -> Self {
         let inner = Inner {
-            index: index.into(),
+            title: title.into(),
+            path: path.into(),
             headers: None,
             config: config,
-            handler: handler,
         };
         Self {
             inner: Some(inner),
@@ -78,7 +84,7 @@ where
     }
 }
 
-impl<C, EH> Future for StaticIndex<C, EH> {
+impl<C> Future for $typo_index<C> {
     type Item = Response;
     type Error = Error;
     fn poll(&mut self) -> Poll<Response, Error> {
@@ -89,23 +95,22 @@ impl<C, EH> Future for StaticIndex<C, EH> {
     }
 }
 
-impl<C, EH> Inner<C, EH>
+impl<C> Inner<C>
 where
     C: AsRef<Config>,
-    EH: ExceptionHandlerService,
 {
     fn call(&mut self, req: Request) -> Result<Response, Error> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
-        if self.config().cache_secs != 0 {
+        if *self.config().get_cache_secs() != 0 {
             headers.set(header::CacheControl(vec![
                 header::CacheDirective::Public,
-                header::CacheDirective::MaxAge(self.config().cache_secs),
+                header::CacheDirective::MaxAge(*self.config().get_cache_secs()),
             ]));
         }
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return self.handler.call(Exception::Method, req),
+            _ => return $typo_exception_handler::call(Exception::Method, req),
         }
         // 301
         if !req.path().ends_with('/') {
@@ -121,26 +126,26 @@ where
                 .with_headers(headers));
         }
         if !self.config().get_show_index() {
-            match fs::read_dir(&self.index) {
+            match fs::read_dir(&self.path) {
                 Ok(_) => {
                     return Ok(Response::new().with_headers(headers));
                 }
                 Err(e) => {
-                    return self.handler.call(e, req);
+                    return  $typo_exception_handler::call(e, req);
                 }
             }
         }
         // HTTP Last-Modified
-        let metadata = match self.index.as_path().metadata() {
+        let metadata = match self.path.as_path().metadata() {
             Ok(m) => m,
             Err(e) => {
-                return self.handler.call(e, req);
+                return  $typo_exception_handler::call(e, req);
             }
         };
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                return self.handler.call(e, req);
+                return  $typo_exception_handler::call(e, req);
             }
         };
         let delta_modified = last_modified
@@ -162,10 +167,10 @@ where
         }
 
         // io error
-        let html = match render_html(&self.index, req.path(), self.config()) {
+        let html = match render_html(&self.title, &self.path, req.path(), self.config()) {
             Ok(html) => html,
             Err(e) => {
-                return self.handler.call(e, req);
+                return  $typo_exception_handler::call(e, req);
             }
         };
 
@@ -187,16 +192,14 @@ where
     }
 }
 
-fn render_html(index: &PathBuf, path: &str, config: &Config) -> io::Result<String> {
-    let path_dec = percent_decode(path.as_bytes()).decode_utf8().unwrap();
-    debug!("\nreq: {:?}\ndec: {:?}", path, path_dec);
+fn render_html(title: &str, index: &PathBuf, path: &str, config: &Config) -> io::Result<String> {
     let mut html = format!(
         "
 <!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">
 <html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">
 <title>Index listing for {}</title>
 </head><body><h1>Index listing for  <a href=\"{}../\">{}</a></h1><hr><ul>",
-        path_dec, path, path_dec
+        title, path, title
     );
 
     let mut walker = WalkDir::new(index).min_depth(1).max_depth(1);
@@ -235,3 +238,8 @@ fn entries_render(entry: DirEntry, html: &mut String) {
     let li = format!("<li><a href=\"{}\">{}</a></li>", name_dec, name);
     html.push_str(&li);
 }
+
+    }
+}
+
+static_index!(StaticIndex, ExceptionHandler);

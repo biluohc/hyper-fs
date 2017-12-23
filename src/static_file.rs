@@ -1,24 +1,40 @@
-use futures::{Async, Future, Poll, Sink, Stream};
-use futures::sync::mpsc::{SendError, Sender};
-use hyper::{header, Body, Chunk, Error, Headers, Method, StatusCode};
-use hyper::server::{Request, Response};
+pub use futures::{Async, Future, Poll, Sink, Stream};
+pub use futures::sync::mpsc::{SendError, Sender};
+pub use hyper::{header, Body, Chunk, Error, Headers, Method, StatusCode};
+pub use hyper::server::{Request, Response};
 
-use bytes::{BufMut, BytesMut};
-use futures_cpupool::{CpuFuture, CpuPool};
-use tokio_core::reactor::Handle;
+pub use bytes::{BufMut, BytesMut};
+pub use futures_cpupool::{CpuFuture, CpuPool};
+pub use tokio_core::reactor::Handle;
 
-use super::{Exception, ExceptionHandler, ExceptionHandlerService};
-use super::FutureObject;
-use super::Config;
+pub use super::{Exception, ExceptionHandlerService};
+pub use super::FutureObject;
+pub use super::Config;
+use super::ExceptionHandler;
 
-use std::io::{self, Read, Seek, SeekFrom};
-use std::fs::{self, File, Metadata};
-use std::path::PathBuf;
-use std::{mem, time};
+pub use std::io::{self, Read, Seek, SeekFrom};
+pub use std::fs::{self, File, Metadata};
+pub use std::path::PathBuf;
+pub use std::{mem, time};
 
+/** create a StaticFile by owner `ExceptionHandler`.
+
+```rs
+mod local {
+    use hyper_fs::static_file::*;
+    // wait to replace
+    use hyper_fs::ExceptionHandler;
+    static_file!(StaticFile, ExceptionHandler);
+}
+pub use self::local::StaticFile;
+```
+*/
+#[macro_export]
+macro_rules! static_file {
+    ($typo_file: ident, $typo_exception_handler: ident) => {
 /// Static File
-pub struct StaticFile<C, EH> {
-    inner: Option<Inner<C, EH>>,
+pub struct $typo_file<C> {
+    inner: Option<Inner<C>>,
     content: Option<CpuFuture<(Response, Option<SendAllCallBackBox>), Error>>,
     handle: Handle,
 }
@@ -39,35 +55,23 @@ type SendAllCallBackBox = Box<SendAllCallBack + Send + 'static>;
 
 type HeaderMaker = FnMut(&mut File, &Metadata, &PathBuf, &Request, &mut header::Headers) -> io::Result<()> + Send + 'static;
 
-pub struct Inner<C, EH = ExceptionHandler> {
+pub struct Inner<C> {
     pool: CpuPool,
     file: PathBuf,
     config: C,
-    handler: EH,
     headers: Option<header::Headers>,
     header_maker: Option<Box<HeaderMaker>>,
 }
 
-impl<C> StaticFile<C, ExceptionHandler>
+impl<C> $typo_file<C>
 where
-    C: AsRef<Config> + Send+ 'static,
+    C: AsRef<Config> + Send + 'static,
 {
     pub fn new<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C) -> Self {
-        Self::with_handler(handle, pool, file, config, ExceptionHandler::default())
-    }
-}
-
-impl<C, EH> StaticFile<C, EH>
-where
-    C: AsRef<Config> + Send+ 'static,
-    EH: ExceptionHandlerService + Send + 'static,
-{
-    pub fn with_handler<P: Into<PathBuf>>(handle: Handle, pool: CpuPool, file: P, config: C, handler: EH) -> Self {
         let inner = Inner {
             pool: pool,
             file: file.into(),
             config: config,
-            handler: handler,
             headers: Some(header::Headers::new()),
             header_maker: None,
         };
@@ -103,7 +107,7 @@ where
     }
 }
 
-impl<C, EH> Future for StaticFile<C, EH> {
+impl<C> Future for $typo_file<C> {
     type Item = Response;
     type Error = Error;
     fn poll(&mut self) -> Poll<Response, Error> {
@@ -123,10 +127,9 @@ impl<C, EH> Future for StaticFile<C, EH> {
     }
 }
 
-impl<C, EH> Inner<C, EH>
+impl<C> Inner<C>
 where
     C: AsRef<Config>,
-    EH: ExceptionHandlerService,
 {
     pub fn config(&self) -> &Config {
         self.config.as_ref()
@@ -134,28 +137,28 @@ where
     fn call(mut self, mut req: Request) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         headers.set(header::AcceptRanges(vec![header::RangeUnit::Bytes]));
-        if self.config().cache_secs != 0 {
+        if *self.config().get_cache_secs() != 0 {
             headers.set(header::CacheControl(vec![
                 header::CacheDirective::Public,
-                header::CacheDirective::MaxAge(self.config().cache_secs),
+                header::CacheDirective::MaxAge(*self.config().get_cache_secs() ),
             ]));
         }
 
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return self.handler.call(Exception::Method, req).map(|r| (r, None)),
+            _ => return $typo_exception_handler::call(Exception::Method, req).map(|r| (r, None)),
         }
         // io error
         let metadata = match fs::metadata(&self.file) {
             Ok(metada) => {
                 if !metada.is_file() {
-                    return self.handler.call(Exception::Typo, req).map(|r| (r, None));
+                    return $typo_exception_handler::call(Exception::Typo, req).map(|r| (r, None));
                 }
                 metada
             }
             Err(e) => {
-                return self.handler.call(e, req).map(|r| (r, None));
+                return $typo_exception_handler::call(e, req).map(|r| (r, None));
             }
         };
 
@@ -186,7 +189,7 @@ where
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                return self.handler.call(e, req).map(|r| (r, None));
+                return $typo_exception_handler::call(e, req).map(|r| (r, None));
             }
         };
         let delta_modified = last_modified
@@ -244,7 +247,7 @@ where
                 let mut file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return self.handler.call(e, req).map(|r| (r, None));
+                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
                     }
                 };
                 if self.header_maker.is_some() {
@@ -256,7 +259,7 @@ where
                         &req,
                         &mut res.headers_mut(),
                     ) {
-                        return self.handler.call(e, req).map(|r| (r, None));
+                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
                     }
                     // have to reset seek if moved...
                 }
@@ -279,10 +282,9 @@ where
     }
 }
 
-impl<C, EH> Inner<C, EH>
+impl<C> Inner<C>
 where
     C: AsRef<Config>,
-    EH: ExceptionHandlerService,
 {
     fn range(
         &self,
@@ -373,7 +375,7 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return self.handler.call(e, req).map(|r| (r, None));
+                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
                     }
                 };
                 let (sender, body) = Body::pair();
@@ -546,3 +548,7 @@ fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: u
     let chunk = Chunk::from(buf.freeze());
     Ok(Some((file, ranges, chunk)))
 }
+    }
+}
+
+static_file!(StaticFile, ExceptionHandler);

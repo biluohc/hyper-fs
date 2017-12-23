@@ -41,13 +41,13 @@ pub struct ExceptionHandler;
 
 /// handle `Exception` and `return` `Response` if it occurs.
 pub trait ExceptionHandlerService: fmt::Debug {
-    fn call<E>(&self, e: E, req: Request) -> Result<Response, Error>
+    fn call<E>(e: E, req: Request) -> Result<Response, Error>
     where
         E: Into<Exception>;
 }
 
 impl ExceptionHandlerService for ExceptionHandler {
-    fn call<E>(&self, e: E, _req: Request) -> Result<Response, Error>
+    fn call<E>(e: E, _req: Request) -> Result<Response, Error>
     where
         E: Into<Exception>,
     {
@@ -66,7 +66,7 @@ impl ExceptionHandlerService for ExceptionHandler {
 
 /// Auto impl...
 pub trait ExceptionHandlerServiceAsync: ExceptionHandlerService {
-    fn call_async<E>(&self, e: E, req: Request) -> FutureObject
+    fn call_async<E>(e: E, req: Request) -> FutureObject
     where
         E: Into<Exception>;
 }
@@ -75,11 +75,11 @@ impl<T> ExceptionHandlerServiceAsync for T
 where
     T: ExceptionHandlerService,
 {
-    fn call_async<E>(&self, e: E, req: Request) -> FutureObject
+    fn call_async<E>(e: E, req: Request) -> FutureObject
     where
         E: Into<Exception>,
     {
-        match self.call(e, req) {
+        match Self::call(e, req) {
             Ok(res) => Box::new(future::ok(res)),
             Err(e) => Box::new(future::err(e)),
         }

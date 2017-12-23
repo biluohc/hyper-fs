@@ -84,7 +84,8 @@ impl Service for FileServer {
                 percent_decode(req.path().as_bytes())
                     .decode_utf8()
                     .unwrap()
-                    .into_owned().to_owned(),
+                    .into_owned()
+                    .to_owned(),
             );
             let fs = StaticFs::new(
                 self.handle.clone(),
