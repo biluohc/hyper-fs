@@ -2,13 +2,18 @@
 name = "hyper-fs"
 version = "0.1.0"
 authors = ["biluohc <biluohc@qq.com>"]
+description = "Static File Service for hyper 0.11+."
 license = "BSD-3-Clause"
 exclude = ["fn.jpg"]
+keywords = ["hyper","staticfile"]
 
 [profile.release]
 opt-level = 3
 # lto = true
 # debug = true
+
+[badges]
+travis-ci = { repository = "biluohc/hyper-fs" }
 
 [features]
 default = ["mime_guess"]
