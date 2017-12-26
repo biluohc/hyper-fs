@@ -17,7 +17,7 @@ pub use std::fs::{self, File, Metadata};
 pub use std::path::PathBuf;
 pub use std::{mem, time};
 
-/** create a StaticFile by owner `ExceptionHandler`.
+/** create a `StaticFile` by owner `ExceptionHandler`.
 
 ```rs
 mod local {
@@ -225,7 +225,7 @@ where
         } else {
             // 304
             if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
-                if !etags.is_empty() && etag == etags[0] {
+                if !etags.is_empty() && *self.config.as_ref().get_cache_secs()>0  && etag == etags[0] {
                     return Ok((
                         Response::new()
                             .with_headers(headers)
@@ -314,12 +314,15 @@ where
             Some(not_modified) => {
                 match (not_modified, valid_ranges.len() == ranges.len()) {
                     (true, true) => Ok(self.build_range_response(valid_ranges, metadata, req, headers)),
-                    (true, false) => Ok(Ok((
+                    (true, false) =>
+                    if *self.config.as_ref().get_cache_secs()>0 { Ok(Ok((
                         Response::new()
                             .with_headers(headers)
                             .with_status(StatusCode::NotModified),
                         None,
-                    ))),
+                    ))) } else {
+                        Err((req, headers))
+                    },
                     (false, _) => {
                         // 200
                         Err((req, headers))

@@ -8,8 +8,13 @@ pub use super::{Exception, ExceptionHandlerService, ExceptionHandlerServiceAsync
 pub use super::FutureObject;
 pub use super::Config;
 
+#[cfg(feature = "default")]
+use super::content_type_maker;
+#[cfg(feature = "default")]
 use super::ExceptionHandler;
+#[cfg(feature = "default")]
 use super::StaticFile;
+#[cfg(feature = "default")]
 use super::StaticIndex;
 
 pub use std::path::PathBuf;
@@ -30,7 +35,7 @@ pub mod fs_server {
 */
 #[macro_export]
 macro_rules! static_fs {
-    ($typo_fs: ident, $typo_file: ident, $typo_index: ident, $typo_exception_handler: ident) => {
+    ($typo_fs: ident, $typo_file: ident, $fn_content_type_maker:ident, $typo_index: ident, $typo_exception_handler: ident) => {
 /// Static File System
 // Todu: full test...
 pub struct $typo_fs<C> {
@@ -116,6 +121,7 @@ where
                     if self.headers_file.is_some() {
                         *file_server.headers_mut() = self.headers_file.clone();
                     }
+                    file_server.headers_maker($fn_content_type_maker);
                     file_server.call(&self.pool, req)
                 } else if md.is_dir() {
                     let mut index_server = $typo_index::new(req_path, fspath, config.clone());
@@ -142,6 +148,8 @@ fn route(req_path: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf)
     let mut components = req_path_dec.split('/')
         .filter(|c| !c.is_empty() && c != &".")
         .collect::<Vec<_>>();
+
+    // can not handle /mkv/../../
     (0..components.len())
         .into_iter()
         .rev()
@@ -192,4 +200,11 @@ fn route(req_path: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf)
     };
 }
 
-static_fs!(StaticFs, StaticFile, StaticIndex, ExceptionHandler);
+#[cfg(feature = "default")]
+static_fs!(
+    StaticFs,
+    StaticFile,
+    content_type_maker,
+    StaticIndex,
+    ExceptionHandler
+);

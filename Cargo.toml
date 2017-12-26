@@ -6,9 +6,13 @@ authors = ["biluohc <biluohc@qq.com>"]
 [profile.release]
 opt-level = 3
 # lto = true
-# debug = true 
+# debug = true
+
+[features]
+default = ["mime_guess"]
 
 [dependencies]
+mime_guess = { version = "^2.0.0-alpha.3", optional = true }
 futures-cpupool= "^0.1.7"
 tokio-core = "^0.1.10"
 futures ="^0.1.17"

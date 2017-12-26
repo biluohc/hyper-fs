@@ -14,6 +14,7 @@ use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 use futures::{future, Future, Stream};
 use hyper::server::{Http, Request, Response, Service};
+use hyper::header::Headers;
 use hyper::Error;
 use url::percent_encoding::percent_decode;
 
@@ -58,6 +59,7 @@ struct FileServer {
     handle: Handle,
     path: PathBuf,
     pool: CpuPool,
+    headers_index: Option<Headers>,
     config: Arc<Config>,
 }
 impl FileServer {
@@ -67,6 +69,13 @@ impl FileServer {
             path: path.into(),
             pool: pool,
             config: Arc::new(config),
+            headers_index: Some(
+                {
+                    let mut tmp = Headers::new();
+                    tmp.set_raw("Content-Type", "text/html; charset=utf-8");
+                    tmp
+                }
+            )
         }
     }
 }
@@ -87,13 +96,18 @@ impl Service for FileServer {
                     .into_owned()
                     .to_owned(),
             );
-            let fs = StaticFs::new(
+            let mut fs = StaticFs::new(
                 self.handle.clone(),
                 self.pool.clone(),
                 "/",
                 &self.path,
                 self.config.clone(),
-            ).call(req);
+            );
+// add `Content-Type` for index, `StaticFs` alrendy add `Content-Type` by `content_type_maker`(mime_guess crate) default.
+// use `static_fs` or `StaticFile` or `static_file` directly if need to use custom `Content-Type` for file.
+            *fs.headers_index_mut() = self.headers_index.clone();
+
+            let fs =fs.call(req);
 
             Box::new(fs.inspect(move |ref res| {
                 println!(

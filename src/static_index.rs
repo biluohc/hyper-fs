@@ -17,7 +17,7 @@ pub use std::path::PathBuf;
 pub use std::{mem, time};
 pub use std::fs;
 
-/** create a StaticIndex by owner `ExceptionHandler`.
+/** create a `StaticIndex` by owner `ExceptionHandler`.
 
 ```rs
 mod local {
@@ -159,7 +159,7 @@ where
             delta_modified.subsec_nanos()
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
-            if !etags.is_empty() && etag == etags[0] {
+            if !etags.is_empty() && *self.config.as_ref().get_cache_secs()>0 && etag == etags[0] {
                 return Ok(Response::new()
                     .with_headers(headers)
                     .with_status(StatusCode::NotModified));
@@ -195,7 +195,7 @@ where
 fn render_html(title: &str, index: &PathBuf, path: &str, config: &Config) -> io::Result<String> {
     let mut html = format!(
         "
-<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">
+<!DOCTYPE HTML>
 <html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">
 <title>Index listing for {}</title>
 </head><body><h1>Index listing for  <a href=\"{}../\">{}</a></h1><hr><ul>",
