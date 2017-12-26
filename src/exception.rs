@@ -7,7 +7,7 @@ use super::FutureObject;
 use std::io::{self, ErrorKind as IoErrorKind};
 use std::fmt;
 
-/// `Exception`: `Error` wrapped.
+/// `Error` wrapped.
 #[derive(Debug)]
 pub enum Exception {
     ///`Io(io::error)`: not found, permission denied...

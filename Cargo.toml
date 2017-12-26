@@ -2,6 +2,7 @@
 name = "hyper-fs"
 version = "0.1.0"
 authors = ["biluohc <biluohc@qq.com>"]
+license = "BSD-3-Clause"
 
 [profile.release]
 opt-level = 3
