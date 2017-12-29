@@ -1,8 +1,10 @@
 [package]
 name = "hyper-fs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["biluohc <biluohc@qq.com>"]
 description = "Static File Service for hyper 0.11+."
+repository = "https://github.com/biluohc/hyper-fs"
+documentation = "https://docs.rs/hyper-fs"
 license = "BSD-3-Clause"
 exclude = ["fn.jpg"]
 keywords = ["hyper","staticfile"]

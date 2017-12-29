@@ -92,17 +92,26 @@ where
             Method::Head | Method::Get => {}
             _ => return $typo_exception_handler::call_async(Exception::Method, req),
         }
+        let req_path_dec = percent_decode(req.path().as_bytes())
+        .decode_utf8()
+        .unwrap()
+        .into_owned()
+        .to_owned();
+        debug!("{}", req_path_dec);
+
+        let res_after_router = router(&req_path_dec, &self.url, &self.path);
         debug!(
-            "\nurl : {:?}\npath: {:?}\nreqRaw: {:?}\nreqDec: {:?}",
+            "\nurl/path: {:?} -> {:?}\nreqRaw: {:?}\nreqDec_afterRouter: {:?}",
             self.url,
             self.path,
             req.path(),
-            route(req.path(), &self.url, &self.path),
+            res_after_router,
         );
-        let (req_path,fspath) = match route(req.path(), &self.url, &self.path) {
+        let (req_path,fspath) = match res_after_router {
             Ok(p) => p,
             Err(e) => return $typo_exception_handler::call_async(e, req),
         };
+
         let metadata = if self.config().get_follow_links() {
             fspath.metadata()
         } else {
@@ -137,36 +146,58 @@ where
         }
     }
 }
+    };
+}
 
-fn route(req_path: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Exception> {
-    let req_path_dec = percent_decode(req_path.as_bytes())
-        .decode_utf8()
-        .unwrap()
-        .into_owned()
-        .to_owned();
-    debug!("{}", req_path_dec);
-    let mut components = req_path_dec.split('/')
+pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Exception> {
+    let mut components = req_path_dec
+        .split('/')
         .filter(|c| !c.is_empty() && c != &".")
         .collect::<Vec<_>>();
 
-    // can not handle /mkv/../../
-    (0..components.len())
+    let parent_count = (0..components.len())
         .into_iter()
         .rev()
-        .for_each(|idx| if idx<components.len()&& components[idx] == ".."  {
-                components.remove(idx);
-                if idx > 0 {
-                    components.remove(idx-1);
+        .fold(0, |count, idx| match (idx < components.len(), idx > 0) {
+            (true, true) => match (components[idx] == "..", components[idx - 1] == "..") {
+                (false, _) => count,
+                (true, false) => {
+                    components.remove(idx);
+                    components.remove(idx - 1);
+                    count
                 }
+                (true, true) => {
+                    components.remove(idx);
+                    count + 1
+                }
+            },
+            (false, _) => count,
+            (true, false) => {
+                if count >= components.len() {
+                    components.clear();
+                    count
+                } else {
+                    let new_len = components.len() - count;
+                    components.truncate(new_len);
+                    components.first().map(|f| *f == "..").map(|b| {
+                        if b {
+                            components.clear()
+                        }
+                    });
+                    count
+                }
+            }
         });
+    debug!("{}: {:?}", parent_count, components);
 
-    let req_path =|| {
-        let mut tmp = components.iter().fold(String::with_capacity(req_path_dec.len()),| mut p, c| {
+    let req_path = || {
+        let mut tmp = components
+            .iter()
+            .fold(String::with_capacity(req_path_dec.len()), |mut p, c| {
                 p.push('/');
                 p.push_str(c);
                 p
-            }
-        );
+            });
         if req_path_dec.ends_with('/') {
             tmp.push('/');
         }
@@ -186,18 +217,91 @@ fn route(req_path: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf)
                 out.push(c);
                 components2.for_each(|cc| out.push(cc));
                 if out.exists() {
-                    return Ok( (req_path(),out));
+                    return Ok((req_path(), out));
                 } else {
                     return Err(Exception::not_found());
                 }
             }
-            (None, None) => {
-                return Ok( (req_path(), path.clone())) },
+            (None, None) => return Ok((req_path(), path.clone())),
             (None, Some(_)) => return Err(Exception::Route),
         }
     }
 }
-    };
+
+#[test]
+fn router_test() {
+    use std::path::Path;
+    assert!(Path::new("tests/index").exists());
+    // router(req_path_dec:&str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Exception>
+    assert_eq!(
+        router("/", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/../../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index", "/", &PathBuf::from("tests")).unwrap(),
+        ("/index".to_owned(), PathBuf::from("tests/index"))
+    );
+    assert_eq!(
+        router("/index/", "/", &PathBuf::from("tests")).unwrap(),
+        ("/index/".to_owned(), PathBuf::from("tests/index"))
+    );
+    assert_eq!(
+        router("/index/../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    // 301 "" -> "/index/.././" by StaticIndex...
+    assert_eq!(
+        router("/index/../.", "/", &PathBuf::from("tests")).unwrap(),
+        ("".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/.././", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/../..", "/", &PathBuf::from("tests")).unwrap(),
+        ("".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/../../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/file", "/", &PathBuf::from("tests")).unwrap(),
+        ("/index/file".to_owned(), PathBuf::from("tests/index/file"))
+    );
+    assert_eq!(
+        router("/index/file/", "/", &PathBuf::from("tests")).unwrap(),
+        ("/index/file/".to_owned(), PathBuf::from("tests/index/file"))
+    );
+    assert_eq!(
+        router("/index/file/../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/index/".to_owned(), PathBuf::from("tests/index"))
+    );
+    assert_eq!(
+        router("/index/file/../../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/file/../..", "/", &PathBuf::from("tests")).unwrap(),
+        ("".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/../file/../../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
+    assert_eq!(
+        router("/index/../../file/../../", "/", &PathBuf::from("tests")).unwrap(),
+        ("/".to_owned(), PathBuf::from("tests"))
+    );
 }
 
 #[cfg(feature = "default")]

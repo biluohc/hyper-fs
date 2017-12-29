@@ -15,7 +15,7 @@ On Cargo.toml:
 
 ```toml
  [dependencies]
- hyper-fs = "0.1.0"
+ hyper-fs = "0.1.1"
 ```
 
 ### Documentation
@@ -31,7 +31,7 @@ or
 
 * [fht2p](https://github.com/biluohc/fht2p): the library write for it.
 
-## To Du
+## To Do
 
 | name | status |
 | ------ | ---:|
