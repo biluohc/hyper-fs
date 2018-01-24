@@ -30,16 +30,19 @@ impl Into<Error> for io::Error {
 }
 
 /// Default Error Handler function
-pub fn error_handler(err_req: (Error, Request)) -> Result<Response, HyperError> {
+pub fn error_handler(err_req: (Error, Request)) -> Result<(Response, Request), HyperError> {
     use Error::*;
-    let (err, _req) = err_req;
-    Ok(Response::new().with_status(match err {
-        Io(i) => match i.kind() {
-            IoErrorKind::NotFound => StatusCode::NotFound,
-            IoErrorKind::PermissionDenied => StatusCode::Forbidden,
-            _ => StatusCode::InternalServerError,
-        },
-        Method => StatusCode::MethodNotAllowed,
-        Typo | Route => StatusCode::InternalServerError,
-    }))
+    let (err, req) = err_req;
+    Ok((
+        Response::new().with_status(match err {
+            Io(i) => match i.kind() {
+                IoErrorKind::NotFound => StatusCode::NotFound,
+                IoErrorKind::PermissionDenied => StatusCode::Forbidden,
+                _ => StatusCode::InternalServerError,
+            },
+            Method => StatusCode::MethodNotAllowed,
+            Typo | Route => StatusCode::InternalServerError,
+        }),
+        req,
+    ))
 }

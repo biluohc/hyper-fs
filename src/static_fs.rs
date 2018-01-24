@@ -1,9 +1,9 @@
-use hyper::server::{Request, Response, Service};
-use hyper::{header, Method};
 use url::percent_encoding::percent_decode;
 use tokio_core::reactor::Handle;
+use hyper::server::{Request};
+use hyper::{header, Method};
 use futures_cpupool::CpuPool;
-use futures::future;
+use futures::{future};
 
 use super::{Config, Error, FutureObject};
 use super::{StaticFile, StaticIndex};
@@ -27,7 +27,7 @@ pub struct StaticFs<C> {
 
 impl<C> StaticFs<C>
 where
-    C: AsRef<Config> + Clone + Send,
+    C: AsRef<Config> + Clone + Send + 'static,
 {
     pub fn new<U, P>(handle: Handle, pool: CpuPool, url: U, path: P, config: C) -> Self
     where
@@ -53,17 +53,7 @@ where
     pub fn headers_index_mut(&mut self) -> &mut Option<header::Headers> {
         &mut self.headers_index
     }
-}
-
-impl<C> Service for StaticFs<C>
-where
-    C: AsRef<Config> + Clone + Send + 'static,
-{
-    type Request = Request;
-    type Response = Response;
-    type Error = (Error, Request);
-    type Future = FutureObject;
-    fn call(&self, req: Request) -> Self::Future {
+    pub fn call(self, req: Request)-> FutureObject {
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}

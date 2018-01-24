@@ -16,7 +16,7 @@ impl Config {
             show_index: false,
             hide_entry: false,
             cache_secs: 0,
-            chunk_size: 16384,
+            chunk_size: 16_384,
         }
     }
 }

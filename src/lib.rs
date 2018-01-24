@@ -55,8 +55,8 @@ extern crate walkdir;
 use futures::future::Future;
 use hyper::{Error as HyperError, Request, Response};
 
-/// `Box<Future<Item = Response, Error = (Error, Request)>>`
-pub type FutureObject = Box<Future<Item = Response, Error = (Error, Request)>>;
+/// `Box<Future<Item = (Response, Request), Error = (Error, Request)>>`
+pub type FutureObject = Box<Future<Item = (Response, Request), Error = (Error, Request)>>;
 /// `Box<Future<Item = Response, Error = HyperError>>`
 pub type HyperFutureObject = Box<Future<Item = Response, Error = HyperError>>;
 // #[doc(hidden)]

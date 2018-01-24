@@ -79,7 +79,8 @@ impl Service for IndexServer {
         Box::new(
             StaticIndex::new(req.path(), &self.path, self.config.clone())
                 .call(&self.pool, req)
-                .or_else(error_handler),
+                .or_else(error_handler)
+                .map(|res_req| res_req.0),
         )
     }
 }

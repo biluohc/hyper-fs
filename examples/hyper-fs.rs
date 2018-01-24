@@ -22,6 +22,7 @@ extern crate hyper_fs;
 use hyper_fs::{error_handler, Config, HyperFutureObject, StaticFs};
 
 use std::path::PathBuf;
+use std::time::Instant;
 use std::sync::Arc;
 use std::rc::Rc;
 use std::env;
@@ -84,41 +85,47 @@ impl Service for FileServer {
     type Error = Error;
     type Future = HyperFutureObject;
     fn call(&self, req: Request) -> Self::Future {
-        if let Some(addr) = req.remote_addr() {
-            let info = (
-                addr,
-                req.method().clone(),
-                percent_decode(req.path().as_bytes())
+        let timer = Instant::now();
+        let mut fs = StaticFs::new(
+            self.handle.clone(),
+            self.pool.clone(),
+            "/",
+            &self.path,
+            self.config.clone(),
+        );
+        // add `Content-Type` for index, `StaticFs` alrendy add `Content-Type` by `content_type_maker`(mime_guess crate) default.
+        // use `static_fs` or `StaticFile` or `static_file` directly if need to use custom `Content-Type` for file.
+        *fs.headers_index_mut() = self.headers_index.clone();
+
+        let fs = fs.call(req);
+
+        Box::new(fs.or_else(error_handler).map(move |res_req| {
+            // remote addr
+            let addr = res_req
+                .1
+                .remote_addr()
+                .expect("Request.remote_addr() is None");
+            // cost time
+            let time = timer.elapsed();
+            // let ms = (time.as_secs()* 1000) as u32 + time.subsec_millis();
+            let ms = (time.as_secs() * 1000) as u32 + time.subsec_nanos() / 1_000_000;
+
+            // log
+            println!(
+                "[{}:{} {:3}ms] {} {} {}",
+                addr.ip(),
+                addr.port(),
+                ms,
+                res_req.0.status().as_u16(),
+                res_req.1.method(),
+                percent_decode(res_req.1.path().as_bytes())
                     .decode_utf8()
                     .unwrap()
                     .into_owned()
-                    .to_owned(),
+                    .to_owned()
             );
-            let mut fs = StaticFs::new(
-                self.handle.clone(),
-                self.pool.clone(),
-                "/",
-                &self.path,
-                self.config.clone(),
-            );
-            // add `Content-Type` for index, `StaticFs` alrendy add `Content-Type` by `content_type_maker`(mime_guess crate) default.
-            // use `static_fs` or `StaticFile` or `static_file` directly if need to use custom `Content-Type` for file.
-            *fs.headers_index_mut() = self.headers_index.clone();
-
-            let fs = fs.call(req);
-
-            Box::new(fs.or_else(error_handler).inspect(move |res| {
-                println!(
-                    "[{}:{}] {} {} {}",
-                    info.0.ip(),
-                    info.0.port(),
-                    res.status().as_u16(),
-                    info.1,
-                    info.2
-                );
-            }))
-        } else {
-            unreachable!("Request.remote_addr() is None")
-        }
+            // extract response
+            res_req.0
+        }))
     }
 }

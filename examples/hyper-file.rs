@@ -83,7 +83,8 @@ impl Service for FileServer {
                 &self.file,
                 self.config.clone(),
             ).call(&self.pool, req)
-                .or_else(error_handler),
+                .or_else(error_handler)
+                .map(|res_req| res_req.0),
         )
     }
 }

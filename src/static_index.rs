@@ -33,7 +33,7 @@ where
 /// Static Index: Simple html list the name of every entry for a index
 pub struct StaticIndex<C> {
     inner: Option<Inner<C>>,
-    content: Option<CpuFuture<Response, (Error, Request)>>,
+    content: Option<CpuFuture<(Response, Request), (Error, Request)>>,
 }
 
 impl<C> StaticIndex<C>
@@ -65,10 +65,11 @@ where
     }
 }
 
+#[doc(hidden)]
 impl<C> Future for StaticIndex<C> {
-    type Item = Response;
+    type Item = (Response, Request);
     type Error = (Error, Request);
-    fn poll(&mut self) -> Poll<Response, (Error, Request)> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.content
             .as_mut()
             .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
@@ -80,7 +81,7 @@ impl<C> Inner<C>
 where
     C: AsRef<Config>,
 {
-    fn call(&mut self, req: Request) -> Result<Response, (Error, Request)> {
+    fn call(&mut self, req: Request) -> Result<(Response, Request), (Error, Request)> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         if *self.config().get_cache_secs() != 0 {
             headers.set(header::CacheControl(vec![
@@ -102,14 +103,17 @@ where
                 new_path.push_str(query);
             }
             headers.set(header::Location::new(new_path));
-            return Ok(Response::new()
-                .with_status(StatusCode::MovedPermanently)
-                .with_headers(headers));
+            return Ok((
+                Response::new()
+                    .with_status(StatusCode::MovedPermanently)
+                    .with_headers(headers),
+                req,
+            ));
         }
         if !self.config().get_show_index() {
             match fs::read_dir(&self.path) {
                 Ok(_) => {
-                    return Ok(Response::new().with_headers(headers));
+                    return Ok((Response::new().with_headers(headers), req));
                 }
                 Err(e) => {
                     return Err((e.into(), req));
@@ -139,12 +143,20 @@ where
             delta_modified.as_secs(),
             delta_modified.subsec_nanos()
         ));
+
+        let mut _304 = false;
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
             if !etags.is_empty() && *self.config.as_ref().get_cache_secs() > 0 && etag == etags[0] {
-                return Ok(Response::new()
-                    .with_headers(headers)
-                    .with_status(StatusCode::NotModified));
+                _304 = true;
             }
+        }
+        if _304 {
+            return Ok((
+                Response::new()
+                    .with_headers(headers)
+                    .with_status(StatusCode::NotModified),
+                req,
+            ));
         }
 
         // io error
@@ -169,7 +181,7 @@ where
             Method::Head => {}
             _ => unreachable!(),
         }
-        Ok(res)
+        Ok((res, req))
     }
 }
 
@@ -189,11 +201,11 @@ fn render_html(title: &str, index: &PathBuf, path: &str, config: &Config) -> io:
     }
     if config.get_hide_entry() {
         for entry in walker.into_iter().filter_entry(|e| !is_hidden(e)) {
-            entries_render(entry?, &mut html);
+            entries_render(&entry?, &mut html);
         }
     } else {
         for entry in walker {
-            entries_render(entry?, &mut html);
+            entries_render(&entry?, &mut html);
         }
     }
     html.push_str("</ul><hr></body></html>");
@@ -209,7 +221,7 @@ fn is_hidden(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 #[inline]
-fn entries_render(entry: DirEntry, html: &mut String) {
+fn entries_render(entry: &DirEntry, html: &mut String) {
     let mut name = entry.file_name().to_string_lossy().into_owned();
     let mut name_dec = name.bytes().map(percent_encode_byte).collect::<String>();
     if entry.file_type().is_dir() {

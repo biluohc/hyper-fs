@@ -91,7 +91,7 @@ impl Doge {
         } else {
             None
         };
-        let path = PathBuf::from(env::args().nth(2).unwrap_or("./".to_owned()));
+        let path = PathBuf::from(env::args().nth(2).unwrap_or_else(||"./".to_owned()));
         let inner = DogeInner {
             doc: doc,
             rust: rust(),
@@ -118,11 +118,12 @@ impl Doge {
 
         // /rust
         } else if self.inner.rust.is_some() && path.as_str() == "/rust" {
-            Box::new(future::ok(
+            Box::new(future::ok((
                 Response::new()
                     .with_status(StatusCode::MovedPermanently)
                     .with_header(header::Location::new("/rust/index.html")),
-            ))
+                req,
+            )))
         } else if self.inner.rust.is_some() && path.starts_with("/rust/") {
             StaticFs::new(
                 self.inner.handle.clone(),
@@ -152,6 +153,10 @@ impl Service for Doge {
     type Future = HyperFutureObject;
 
     fn call(&self, req: Request) -> Self::Future {
-        Box::new(self.call_inner(req).or_else(error_handler))
+        Box::new(
+            self.call_inner(req)
+                .or_else(error_handler)
+                .map(|res_req| res_req.0),
+        )
     }
 }

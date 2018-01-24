@@ -17,7 +17,7 @@ use std::{mem, time};
 /// Static File
 pub struct StaticFile<C> {
     inner: Option<Inner<C>>,
-    content: Option<CpuFuture<(Response, Option<SendAllCallBackBox>), (Error, Request)>>,
+    content: Option<CpuFuture<(Response, Request, Option<SendAllCallBackBox>), (Error, Request)>>,
     handle: Handle,
 }
 
@@ -89,21 +89,22 @@ where
     }
 }
 
+#[doc(hidden)]
 impl<C> Future for StaticFile<C> {
-    type Item = Response;
+    type Item = (Response, Request);
     type Error = (Error, Request);
-    fn poll(&mut self) -> Poll<Response, Self::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.content
             .as_mut()
             .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
             .poll()
         {
             Ok(Async::NotReady) => Ok(Async::NotReady),
-            Ok(Async::Ready((response, Some(t)))) => {
+            Ok(Async::Ready((response, req, Some(t)))) => {
                 t.send_all_call_back(&self.handle);
-                Ok(Async::Ready(response))
+                Ok(Async::Ready((response, req)))
             }
-            Ok(Async::Ready((response, None))) => Ok(Async::Ready(response)),
+            Ok(Async::Ready((response, req, None))) => Ok(Async::Ready((response, req))),
             Err(e) => Err(e),
         }
     }
@@ -116,7 +117,7 @@ where
     pub fn config(&self) -> &Config {
         self.config.as_ref()
     }
-    fn call(mut self, mut req: Request) -> Result<(Response, Option<SendAllCallBackBox>), (Error, Request)> {
+    fn call(mut self, mut req: Request) -> Result<(Response, Request, Option<SendAllCallBackBox>), (Error, Request)> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         headers.set(header::AcceptRanges(vec![header::RangeUnit::Bytes]));
         if *self.config().get_cache_secs() != 0 {
@@ -164,6 +165,7 @@ where
                 Response::new()
                     .with_status(StatusCode::MovedPermanently)
                     .with_headers(headers),
+                req,
                 None,
             ));
         }
@@ -191,32 +193,42 @@ where
 
         // Range
         let range: Option<header::Range> = req.headers_mut().remove();
-        let (req, mut headers) = if let Some(header::Range::Bytes(ranges)) = range {
+        let mut headers = if let Some(header::Range::Bytes(ranges)) = range {
             match self.range(
-                &ranges,
-                req,
+                &ranges[..],
+                &req,
                 headers,
                 &metadata,
                 &last_modified,
                 &delta_modified,
                 &etag,
             ) {
-                Ok(o) => return o,
-                Err(rh) => rh,
+                Ok(o) => {
+                    return match o {
+                        Ok((res, call_back)) => Ok((res, req, call_back)),
+                        Err(e) => Err((e, req)),
+                    }
+                }
+                Err(h) => h,
             }
         } else {
             // 304
+            let mut _304 = false;
             if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
                 if !etags.is_empty() && *self.config.as_ref().get_cache_secs() > 0 && etag == etags[0] {
-                    return Ok((
-                        Response::new()
-                            .with_headers(headers)
-                            .with_status(StatusCode::NotModified),
-                        None,
-                    ));
+                    _304 = true;
                 }
             }
-            (req, headers)
+            if _304 {
+                return Ok((
+                    Response::new()
+                        .with_headers(headers)
+                        .with_status(StatusCode::NotModified),
+                    req,
+                    None,
+                ));
+            }
+            headers
         };
 
         // 200
@@ -250,6 +262,7 @@ where
                 res.set_body(body);
                 Ok((
                     res,
+                    req,
                     Some(Box::new(FileChunkStream::new(
                         &self.pool,
                         sender,
@@ -258,7 +271,7 @@ where
                     )) as SendAllCallBackBox),
                 ))
             }
-            Method::Head => Ok((res, None)),
+            Method::Head => Ok((res, req, None)),
             _ => unreachable!(),
         }
     }
@@ -270,16 +283,15 @@ where
 {
     fn range(
         &self,
-        ranges: &Vec<header::ByteRangeSpec>,
-        req: Request,
+        ranges: &[header::ByteRangeSpec],
+        req: &Request,
         headers: header::Headers,
         metadata: &Metadata,
         last_modified: &time::SystemTime,
         delta_modified: &time::Duration,
         etag: &header::EntityTag,
-    ) -> Result<Result<(Response, Option<SendAllCallBackBox>), (Error, Request)>, (Request, header::Headers)> {
+    ) -> Result<Result<(Response, Option<SendAllCallBackBox>), Error>, header::Headers> {
         let valid_ranges: Vec<_> = ranges
-            .as_slice()
             .iter()
             .filter_map(|r| r.to_satisfiable_range(metadata.len()))
             .collect();
@@ -304,11 +316,11 @@ where
                             None,
                         )))
                     } else {
-                        Err((req, headers))
+                        Err(headers)
                     },
                     (false, _) => {
                         // 200
-                        Err((req, headers))
+                        Err(headers)
                     }
                 }
             }
@@ -330,9 +342,9 @@ where
         &self,
         valid_ranges: Vec<(u64, u64)>,
         metadata: &Metadata,
-        req: Request,
+        req: &Request,
         mut headers: header::Headers,
-    ) -> Result<(Response, Option<SendAllCallBackBox>), (Error, Request)> {
+    ) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
         let content_length = valid_ranges
             .as_slice()
             .iter()
@@ -361,7 +373,7 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return Err((e.into(), req));
+                        return Err(e.into());
                     }
                 };
                 let (sender, body) = Body::pair();
