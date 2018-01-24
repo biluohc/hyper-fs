@@ -19,7 +19,7 @@ use hyper::Error;
 use url::percent_encoding::percent_decode;
 
 extern crate hyper_fs;
-use hyper_fs::{Config, FutureObject, StaticFs};
+use hyper_fs::{error_handler, Config, HyperFutureObject, StaticFs};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,7 +82,7 @@ impl Service for FileServer {
     type Request = Request;
     type Response = Response;
     type Error = Error;
-    type Future = FutureObject;
+    type Future = HyperFutureObject;
     fn call(&self, req: Request) -> Self::Future {
         if let Some(addr) = req.remote_addr() {
             let info = (
@@ -107,7 +107,7 @@ impl Service for FileServer {
 
             let fs = fs.call(req);
 
-            Box::new(fs.inspect(move |ref res| {
+            Box::new(fs.or_else(error_handler).inspect(move |res| {
                 println!(
                     "[{}:{}] {} {} {}",
                     info.0.ip(),

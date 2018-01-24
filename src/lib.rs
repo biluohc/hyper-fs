@@ -15,7 +15,7 @@ On Cargo.toml:
 
 ```toml
  [dependencies]
- hyper-fs = "0.1.1"
+ hyper-fs = "0.2.0"
 ```
 
 ### Documentation
@@ -34,50 +34,49 @@ or
 ## To Do
 
 | name | status |
-| ------ | ---:|
-|Get/Head                  | yes|
-|Not Modified(304)         | yes|
-|File Range(bytes)         | yes|
-|Upload                    | no |
+| ------ | --- |
+|Get/Head                  | yes |
+|Not Modified(304)         | yes |
+|File Range(bytes)         | yes |
+|Upload                    | no  |
 */
 extern crate bytes;
+#[macro_use]
+extern crate cfg_if;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
 #[macro_use]
 extern crate log;
-#[cfg(feature = "default")]
-extern crate mime_guess;
 extern crate tokio_core;
 extern crate url;
 extern crate walkdir;
 
 use futures::future::Future;
-use hyper::{Error, Response};
+use hyper::{Error as HyperError, Request, Response};
 
-/// `Box<Future<Item = Response, Error = Error>>`
-pub type FutureObject = Box<Future<Item = Response, Error = Error>>;
+/// `Box<Future<Item = Response, Error = (Error, Request)>>`
+pub type FutureObject = Box<Future<Item = Response, Error = (Error, Request)>>;
+/// `Box<Future<Item = Response, Error = HyperError>>`
+pub type HyperFutureObject = Box<Future<Item = Response, Error = HyperError>>;
 // #[doc(hidden)]
 
-#[cfg(feature = "default")]
-pub(crate) mod content_type;
-pub(crate) mod exception;
-#[doc(hidden)]
-#[macro_use]
-pub mod static_file;
-#[doc(hidden)]
-#[macro_use]
-pub mod static_index;
-#[doc(hidden)]
-#[macro_use]
-pub mod static_fs;
 pub(crate) mod config;
+pub(crate) mod error;
+pub(crate) mod static_file;
+pub(crate) mod static_index;
 
-pub use exception::{Exception, ExceptionHandler, ExceptionHandlerService, ExceptionHandlerServiceAsync};
+pub use config::Config;
+pub use error::{error_handler, Error};
 pub use static_index::StaticIndex;
 pub use static_file::StaticFile;
-#[cfg(feature = "default")]
-pub use static_fs::StaticFs;
-pub use config::Config;
-#[cfg(feature = "default")]
-pub use content_type::maker as content_type_maker;
+
+cfg_if! {
+    if #[cfg(feature = "default")] {
+    extern crate mime_guess;
+    pub(crate) mod content_type;
+    pub(crate) mod static_fs;
+    pub use static_fs::StaticFs;
+    pub use content_type::maker as content_type_maker;
+  }
+}

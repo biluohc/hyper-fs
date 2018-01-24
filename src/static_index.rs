@@ -1,36 +1,17 @@
-pub use hyper::{header, Error, Method, StatusCode};
-pub use hyper::server::{Request, Response};
+use hyper::{header, Method, StatusCode};
+use hyper::server::{Request, Response};
 
-#[allow(unused_imports)]
-pub use walkdir::{DirEntry, Error as WalkDirErr, WalkDir};
-pub use url::percent_encoding::percent_encode_byte;
-pub use futures_cpupool::{CpuFuture, CpuPool};
-pub use futures::{Future, Poll};
+use walkdir::{DirEntry, WalkDir};
+use url::percent_encoding::percent_encode_byte;
+use futures_cpupool::{CpuFuture, CpuPool};
+use futures::{Future, Poll};
 
-pub use super::{Exception, ExceptionHandlerService};
-pub use super::{Config, FutureObject};
-use super::ExceptionHandler;
+use super::{Config, Error, FutureObject};
 
-#[allow(unused_imports)]
-pub use std::io::{self, ErrorKind as IoErrorKind};
-pub use std::path::PathBuf;
-pub use std::{mem, time};
-pub use std::fs;
-
-/** create a `StaticIndex` by owner `ExceptionHandler`.
-
-```rs
-mod local {
-    use hyper_fs::static_index::*;
-    // wait to replace
-    use hyper_fs::ExceptionHandler;
-    static_index!(StaticIndex, ExceptionHandler);
-}
-```
-*/
-#[macro_export]
-macro_rules! static_index {
-    ($typo_index: ident, $typo_exception_handler: ident) => {
+use std::path::PathBuf;
+use std::{mem, time};
+use std::fs;
+use std::io;
 
 struct Inner<C> {
     title: String,
@@ -50,12 +31,12 @@ where
 
 // use Template engine? too heavy...
 /// Static Index: Simple html list the name of every entry for a index
-pub struct $typo_index<C> {
+pub struct StaticIndex<C> {
     inner: Option<Inner<C>>,
-    content: Option<CpuFuture<Response, Error>>,
+    content: Option<CpuFuture<Response, (Error, Request)>>,
 }
 
-impl<C> $typo_index<C>
+impl<C> StaticIndex<C>
 where
     C: AsRef<Config> + Send + 'static,
 {
@@ -84,10 +65,10 @@ where
     }
 }
 
-impl<C> Future for $typo_index<C> {
+impl<C> Future for StaticIndex<C> {
     type Item = Response;
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Response, Error> {
+    type Error = (Error, Request);
+    fn poll(&mut self) -> Poll<Response, (Error, Request)> {
         self.content
             .as_mut()
             .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
@@ -99,7 +80,7 @@ impl<C> Inner<C>
 where
     C: AsRef<Config>,
 {
-    fn call(&mut self, req: Request) -> Result<Response, Error> {
+    fn call(&mut self, req: Request) -> Result<Response, (Error, Request)> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         if *self.config().get_cache_secs() != 0 {
             headers.set(header::CacheControl(vec![
@@ -110,7 +91,7 @@ where
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return $typo_exception_handler::call(Exception::Method, req),
+            _ => return Err((Error::Method, req)),
         }
         // 301
         if !req.path().ends_with('/') {
@@ -131,7 +112,7 @@ where
                     return Ok(Response::new().with_headers(headers));
                 }
                 Err(e) => {
-                    return  $typo_exception_handler::call(e, req);
+                    return Err((e.into(), req));
                 }
             }
         }
@@ -139,13 +120,13 @@ where
         let metadata = match self.path.as_path().metadata() {
             Ok(m) => m,
             Err(e) => {
-                return  $typo_exception_handler::call(e, req);
+                return Err((e.into(), req));
             }
         };
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                return  $typo_exception_handler::call(e, req);
+                return Err((e.into(), req));
             }
         };
         let delta_modified = last_modified
@@ -159,7 +140,7 @@ where
             delta_modified.subsec_nanos()
         ));
         if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
-            if !etags.is_empty() && *self.config.as_ref().get_cache_secs()>0 && etag == etags[0] {
+            if !etags.is_empty() && *self.config.as_ref().get_cache_secs() > 0 && etag == etags[0] {
                 return Ok(Response::new()
                     .with_headers(headers)
                     .with_status(StatusCode::NotModified));
@@ -170,7 +151,7 @@ where
         let html = match render_html(&self.title, &self.path, req.path(), self.config()) {
             Ok(html) => html,
             Err(e) => {
-                return  $typo_exception_handler::call(e, req);
+                return Err((e.into(), req));
             }
         };
 
@@ -238,8 +219,3 @@ fn entries_render(entry: DirEntry, html: &mut String) {
     let li = format!("<li><a href=\"{}\">{}</a></li>", name_dec, name);
     html.push_str(&li);
 }
-
-    }
-}
-
-static_index!(StaticIndex, ExceptionHandler);

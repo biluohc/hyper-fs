@@ -1,6 +1,6 @@
 [package]
 name = "hyper-fs"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["biluohc <biluohc@qq.com>"]
 description = "Static File Service for hyper 0.11+."
 repository = "https://github.com/biluohc/hyper-fs"
@@ -28,6 +28,7 @@ futures ="^0.1.17"
 walkdir = "^2.0.1"
 hyper = "^0.11.8"
 bytes = "^0.4.5"
+cfg-if = "0.1"
 url = "^1.6.0"
 log = "^0.3.8"
 

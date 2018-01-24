@@ -1,44 +1,21 @@
-pub use hyper::server::{Request, Response, Service};
-pub use hyper::{header, Error, Method};
-pub use futures_cpupool::CpuPool;
-pub use tokio_core::reactor::Handle;
-pub use url::percent_encoding::percent_decode;
+use hyper::server::{Request, Response, Service};
+use hyper::{header, Method};
+use url::percent_encoding::percent_decode;
+use tokio_core::reactor::Handle;
+use futures_cpupool::CpuPool;
+use futures::future;
 
-pub use super::{Exception, ExceptionHandlerService, ExceptionHandlerServiceAsync};
-pub use super::FutureObject;
-pub use super::Config;
+use super::{Config, Error, FutureObject};
+use super::{StaticFile, StaticIndex};
 
 #[cfg(feature = "default")]
 use super::content_type_maker;
-#[cfg(feature = "default")]
-use super::ExceptionHandler;
-#[cfg(feature = "default")]
-use super::StaticFile;
-#[cfg(feature = "default")]
-use super::StaticIndex;
 
-pub use std::path::PathBuf;
+use std::path::PathBuf;
 
-/**
-create a `StaticFs` by owner types.
-
-```rs
-#[macro_use]
-extern crate hyper_fs;
-
-pub mod fs_server {
-    use hyper_fs::static_fs::*;
-    use hyper_fs::{StaticFile, StaticIndex,ExceptionHandler};
-    static_fs!(StaticFs2,StaticFile, StaticIndex, ExceptionHandler);
-}
-```
-*/
-#[macro_export]
-macro_rules! static_fs {
-    ($typo_fs: ident, $typo_file: ident, $fn_content_type_maker:ident, $typo_index: ident, $typo_exception_handler: ident) => {
 /// Static File System
 // Todu: full test...
-pub struct $typo_fs<C> {
+pub struct StaticFs<C> {
     url: String,   // http's base path
     path: PathBuf, // Fs's base path
     handle: Handle,
@@ -48,7 +25,7 @@ pub struct $typo_fs<C> {
     config: C,
 }
 
-impl<C> $typo_fs<C>
+impl<C> StaticFs<C>
 where
     C: AsRef<Config> + Clone + Send,
 {
@@ -78,25 +55,25 @@ where
     }
 }
 
-impl<C> Service for $typo_fs<C>
+impl<C> Service for StaticFs<C>
 where
     C: AsRef<Config> + Clone + Send + 'static,
 {
     type Request = Request;
     type Response = Response;
-    type Error = Error;
+    type Error = (Error, Request);
     type Future = FutureObject;
     fn call(&self, req: Request) -> Self::Future {
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return $typo_exception_handler::call_async(Exception::Method, req),
+            _ => return Box::new(future::err((Error::Method, req))),
         }
         let req_path_dec = percent_decode(req.path().as_bytes())
-        .decode_utf8()
-        .unwrap()
-        .into_owned()
-        .to_owned();
+            .decode_utf8()
+            .unwrap()
+            .into_owned()
+            .to_owned();
         debug!("{}", req_path_dec);
 
         let res_after_router = router(&req_path_dec, &self.url, &self.path);
@@ -107,9 +84,9 @@ where
             req.path(),
             res_after_router,
         );
-        let (req_path,fspath) = match res_after_router {
+        let (req_path, fspath) = match res_after_router {
             Ok(p) => p,
-            Err(e) => return $typo_exception_handler::call_async(e, req),
+            Err(e) => return Box::new(future::err((e, req))),
         };
 
         let metadata = if self.config().get_follow_links() {
@@ -121,7 +98,7 @@ where
             Ok(md) => {
                 let config = self.config.clone();
                 if md.is_file() {
-                    let mut file_server = $typo_file::new(
+                    let mut file_server = StaticFile::new(
                         self.handle.clone(),
                         self.pool.clone(),
                         fspath,
@@ -130,26 +107,24 @@ where
                     if self.headers_file.is_some() {
                         *file_server.headers_mut() = self.headers_file.clone();
                     }
-                    file_server.headers_maker($fn_content_type_maker);
+                    file_server.headers_maker(content_type_maker);
                     file_server.call(&self.pool, req)
                 } else if md.is_dir() {
-                    let mut index_server = $typo_index::new(req_path, fspath, config.clone());
+                    let mut index_server = StaticIndex::new(req_path, fspath, config.clone());
                     if self.headers_index.is_some() {
                         *index_server.headers_mut() = self.headers_index.clone();
                     }
                     index_server.call(&self.pool, req)
                 } else {
-                    $typo_exception_handler::call_async(Exception::Typo, req)
+                    Box::new(future::err((Error::Typo, req)))
                 }
             }
-            Err(e) => $typo_exception_handler::call_async(e, req),
+            Err(e) => Box::new(future::err((e.into(), req))),
         }
     }
 }
-    };
-}
 
-pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Exception> {
+pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Error> {
     let mut components = req_path_dec
         .split('/')
         .filter(|c| !c.is_empty() && c != &".")
@@ -209,7 +184,7 @@ pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String,
         match (components2.next(), base_components.next()) {
             (Some(c), Some(b)) => {
                 if c != &b {
-                    return Err(Exception::Route);
+                    return Err(Error::Route);
                 }
             }
             (Some(c), None) => {
@@ -219,11 +194,11 @@ pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String,
                 if out.exists() {
                     return Ok((req_path(), out));
                 } else {
-                    return Err(Exception::not_found());
+                    return Err(Error::not_found());
                 }
             }
             (None, None) => return Ok((req_path(), path.clone())),
-            (None, Some(_)) => return Err(Exception::Route),
+            (None, Some(_)) => return Err(Error::Route),
         }
     }
 }
@@ -232,7 +207,7 @@ pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String,
 fn router_test() {
     use std::path::Path;
     assert!(Path::new("tests/index").exists());
-    // router(req_path_dec:&str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Exception>
+    // router(req_path_dec:&str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Error>
     assert_eq!(
         router("/", "/", &PathBuf::from("tests")).unwrap(),
         ("/".to_owned(), PathBuf::from("tests"))
@@ -303,12 +278,3 @@ fn router_test() {
         ("/".to_owned(), PathBuf::from("tests"))
     );
 }
-
-#[cfg(feature = "default")]
-static_fs!(
-    StaticFs,
-    StaticFile,
-    content_type_maker,
-    StaticIndex,
-    ExceptionHandler
-);

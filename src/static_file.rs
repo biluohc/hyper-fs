@@ -1,41 +1,23 @@
-pub use futures::{Async, Future, Poll, Sink, Stream};
-pub use futures::sync::mpsc::{SendError, Sender};
-pub use hyper::{header, Body, Chunk, Error, Headers, Method, StatusCode};
-pub use hyper::server::{Request, Response};
+use futures::{Async, Future, Poll, Sink, Stream};
+use futures::sync::mpsc::{SendError, Sender};
+use hyper::{header, Body, Chunk, Error as HyperError, Headers, Method, StatusCode};
+use hyper::server::{Request, Response};
 
-pub use bytes::{BufMut, BytesMut};
-pub use futures_cpupool::{CpuFuture, CpuPool};
-pub use tokio_core::reactor::Handle;
+use bytes::{BufMut, BytesMut};
+use futures_cpupool::{CpuFuture, CpuPool};
+use tokio_core::reactor::Handle;
 
-pub use super::{Exception, ExceptionHandlerService};
-pub use super::FutureObject;
-pub use super::Config;
-use super::ExceptionHandler;
+use super::{Config, Error, FutureObject};
 
-pub use std::io::{self, Read, Seek, SeekFrom};
-pub use std::fs::{self, File, Metadata};
-pub use std::path::PathBuf;
-pub use std::{mem, time};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::{self, File, Metadata};
+use std::path::PathBuf;
+use std::{mem, time};
 
-/** create a `StaticFile` by owner `ExceptionHandler`.
-
-```rs
-mod local {
-    use hyper_fs::static_file::*;
-    // wait to replace
-    use hyper_fs::ExceptionHandler;
-    static_file!(StaticFile, ExceptionHandler);
-}
-pub use self::local::StaticFile;
-```
-*/
-#[macro_export]
-macro_rules! static_file {
-    ($typo_file: ident, $typo_exception_handler: ident) => {
 /// Static File
-pub struct $typo_file<C> {
+pub struct StaticFile<C> {
     inner: Option<Inner<C>>,
-    content: Option<CpuFuture<(Response, Option<SendAllCallBackBox>), Error>>,
+    content: Option<CpuFuture<(Response, Option<SendAllCallBackBox>), (Error, Request)>>,
     handle: Handle,
 }
 
@@ -63,7 +45,7 @@ pub struct Inner<C> {
     header_maker: Option<Box<HeaderMaker>>,
 }
 
-impl<C> $typo_file<C>
+impl<C> StaticFile<C>
 where
     C: AsRef<Config> + Send + 'static,
 {
@@ -107,10 +89,10 @@ where
     }
 }
 
-impl<C> Future for $typo_file<C> {
+impl<C> Future for StaticFile<C> {
     type Item = Response;
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Response, Error> {
+    type Error = (Error, Request);
+    fn poll(&mut self) -> Poll<Response, Self::Error> {
         match self.content
             .as_mut()
             .expect("Poll a empty StaticIndex(NotInit/AlreadyConsume)")
@@ -134,31 +116,31 @@ where
     pub fn config(&self) -> &Config {
         self.config.as_ref()
     }
-    fn call(mut self, mut req: Request) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
+    fn call(mut self, mut req: Request) -> Result<(Response, Option<SendAllCallBackBox>), (Error, Request)> {
         let mut headers = mem::replace(&mut self.headers, None).unwrap_or_else(header::Headers::new);
         headers.set(header::AcceptRanges(vec![header::RangeUnit::Bytes]));
         if *self.config().get_cache_secs() != 0 {
             headers.set(header::CacheControl(vec![
                 header::CacheDirective::Public,
-                header::CacheDirective::MaxAge(*self.config().get_cache_secs() ),
+                header::CacheDirective::MaxAge(*self.config().get_cache_secs()),
             ]));
         }
 
         // method error
         match *req.method() {
             Method::Head | Method::Get => {}
-            _ => return $typo_exception_handler::call(Exception::Method, req).map(|r| (r, None)),
+            _ => return Err((Error::Method, req)),
         }
         // io error
         let metadata = match fs::metadata(&self.file) {
             Ok(metada) => {
                 if !metada.is_file() {
-                    return $typo_exception_handler::call(Exception::Typo, req).map(|r| (r, None));
+                    return Err((Error::Typo, req));
                 }
                 metada
             }
             Err(e) => {
-                return $typo_exception_handler::call(e, req).map(|r| (r, None));
+                return Err((e.into(), req));
             }
         };
 
@@ -189,7 +171,7 @@ where
         let last_modified = match metadata.modified() {
             Ok(time) => time,
             Err(e) => {
-                return $typo_exception_handler::call(e, req).map(|r| (r, None));
+                return Err((e.into(), req));
             }
         };
         let delta_modified = last_modified
@@ -225,7 +207,7 @@ where
         } else {
             // 304
             if let Some(&header::IfNoneMatch::Items(ref etags)) = req.headers().get() {
-                if !etags.is_empty() && *self.config.as_ref().get_cache_secs()>0  && etag == etags[0] {
+                if !etags.is_empty() && *self.config.as_ref().get_cache_secs() > 0 && etag == etags[0] {
                     return Ok((
                         Response::new()
                             .with_headers(headers)
@@ -247,7 +229,7 @@ where
                 let mut file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
+                        return Err((e.into(), req));
                     }
                 };
                 if self.header_maker.is_some() {
@@ -259,7 +241,7 @@ where
                         &req,
                         &mut res.headers_mut(),
                     ) {
-                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
+                        return Err((e.into(), req));
                     }
                     // have to reset seek if moved...
                 }
@@ -295,7 +277,7 @@ where
         last_modified: &time::SystemTime,
         delta_modified: &time::Duration,
         etag: &header::EntityTag,
-    ) -> Result<Result<(Response, Option<SendAllCallBackBox>), Error>, (Request, header::Headers)> {
+    ) -> Result<Result<(Response, Option<SendAllCallBackBox>), (Error, Request)>, (Request, header::Headers)> {
         let valid_ranges: Vec<_> = ranges
             .as_slice()
             .iter()
@@ -314,13 +296,14 @@ where
             Some(not_modified) => {
                 match (not_modified, valid_ranges.len() == ranges.len()) {
                     (true, true) => Ok(self.build_range_response(valid_ranges, metadata, req, headers)),
-                    (true, false) =>
-                    if *self.config.as_ref().get_cache_secs()>0 { Ok(Ok((
-                        Response::new()
-                            .with_headers(headers)
-                            .with_status(StatusCode::NotModified),
-                        None,
-                    ))) } else {
+                    (true, false) => if *self.config.as_ref().get_cache_secs() > 0 {
+                        Ok(Ok((
+                            Response::new()
+                                .with_headers(headers)
+                                .with_status(StatusCode::NotModified),
+                            None,
+                        )))
+                    } else {
                         Err((req, headers))
                     },
                     (false, _) => {
@@ -349,7 +332,7 @@ where
         metadata: &Metadata,
         req: Request,
         mut headers: header::Headers,
-    ) -> Result<(Response, Option<SendAllCallBackBox>), Error> {
+    ) -> Result<(Response, Option<SendAllCallBackBox>), (Error, Request)> {
         let content_length = valid_ranges
             .as_slice()
             .iter()
@@ -378,7 +361,7 @@ where
                 let file = match File::open(&self.file) {
                     Ok(file) => file,
                     Err(e) => {
-                        return $typo_exception_handler::call(e, req).map(|r| (r, None));
+                        return Err((e.into(), req));
                     }
                 };
                 let (sender, body) = Body::pair();
@@ -409,13 +392,13 @@ impl SendAll for FileChunkStream {
 
 type OptionFileChunk = Option<(File, Chunk)>;
 struct FileChunkStream {
-    inner: CpuFuture<OptionFileChunk, Error>,
+    inner: CpuFuture<OptionFileChunk, HyperError>,
     pool: CpuPool,
     chunk_size: usize,
-    sender: Option<Sender<Result<Chunk, Error>>>,
+    sender: Option<Sender<Result<Chunk, HyperError>>>,
 }
 impl FileChunkStream {
-    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, Error>>, file: File, chunk_size: usize) -> Self {
+    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, HyperError>>, file: File, chunk_size: usize) -> Self {
         let chunk = pool.spawn_fn(move || read_a_chunk(file, chunk_size));
         FileChunkStream {
             inner: chunk,
@@ -426,7 +409,7 @@ impl FileChunkStream {
     }
 }
 impl Stream for FileChunkStream {
-    type Item = Result<Chunk, Error>;
+    type Item = Result<Chunk, HyperError>;
     type Error = SendError<Self::Item>;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.inner.poll() {
@@ -443,7 +426,7 @@ impl Stream for FileChunkStream {
     }
 }
 
-fn read_a_chunk(mut file: File, chunk_size: usize) -> Result<OptionFileChunk, Error> {
+fn read_a_chunk(mut file: File, chunk_size: usize) -> Result<OptionFileChunk, HyperError> {
     let mut buf = BytesMut::with_capacity(chunk_size);
     match file.read(unsafe { buf.bytes_mut() }) {
         Ok(0) => Ok(None),
@@ -454,7 +437,7 @@ fn read_a_chunk(mut file: File, chunk_size: usize) -> Result<OptionFileChunk, Er
             let chunk = Chunk::from(buf.freeze());
             Ok(Some((file, chunk)))
         }
-        Err(e) => Err(Error::Io(e)),
+        Err(e) => Err(HyperError::Io(e)),
     }
 }
 
@@ -468,14 +451,14 @@ impl SendAll for FileRangeChunkStream {
 type OptionFileRangeChunk = Option<(File, Vec<(u64, u64)>, Chunk)>;
 
 struct FileRangeChunkStream {
-    inner: CpuFuture<OptionFileRangeChunk, Error>,
+    inner: CpuFuture<OptionFileRangeChunk, HyperError>,
     pool: CpuPool,
     chunk_size: usize,
-    sender: Option<Sender<Result<Chunk, Error>>>,
+    sender: Option<Sender<Result<Chunk, HyperError>>>,
 }
 
 impl FileRangeChunkStream {
-    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, Error>>, file: File, ranges: Vec<(u64, u64)>, chunk_size: usize) -> Self {
+    fn new(pool: &CpuPool, sender: Sender<Result<Chunk, HyperError>>, file: File, ranges: Vec<(u64, u64)>, chunk_size: usize) -> Self {
         let chunk = pool.spawn_fn(move || read_a_range_chunk(file, ranges, chunk_size));
         FileRangeChunkStream {
             inner: chunk,
@@ -486,7 +469,7 @@ impl FileRangeChunkStream {
     }
 }
 impl Stream for FileRangeChunkStream {
-    type Item = Result<Chunk, Error>;
+    type Item = Result<Chunk, HyperError>;
     type Error = SendError<Self::Item>;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.inner.poll() {
@@ -503,7 +486,7 @@ impl Stream for FileRangeChunkStream {
         }
     }
 }
-fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: usize) -> Result<OptionFileRangeChunk, Error> {
+fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: usize) -> Result<OptionFileRangeChunk, HyperError> {
     if ranges.is_empty() {
         return Ok(None);
     }
@@ -529,7 +512,7 @@ fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: u
         buf.reserve(reserve_size);
         match file.seek(SeekFrom::Start(start)) {
             Ok(s) => debug_assert_eq!(s, start),
-            Err(e) => return Err(Error::Io(e)),
+            Err(e) => return Err(HyperError::Io(e)),
         }
         match file.read(unsafe { buf.bytes_mut() }) {
             Ok(len) => {
@@ -545,13 +528,9 @@ fn read_a_range_chunk(mut file: File, mut ranges: Vec<(u64, u64)>, chunk_size: u
                 }
                 count += reserve_size;
             }
-            Err(e) => return Err(Error::Io(e)),
+            Err(e) => return Err(HyperError::Io(e)),
         }
     }
     let chunk = Chunk::from(buf.freeze());
     Ok(Some((file, ranges, chunk)))
 }
-    }
-}
-
-static_file!(StaticFile, ExceptionHandler);
