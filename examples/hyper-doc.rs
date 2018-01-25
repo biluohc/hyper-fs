@@ -91,7 +91,7 @@ impl Doge {
         } else {
             None
         };
-        let path = PathBuf::from(env::args().nth(2).unwrap_or_else(||"./".to_owned()));
+        let path = PathBuf::from(env::args().nth(2).unwrap_or_else(|| "./".to_owned()));
         let inner = DogeInner {
             doc: doc,
             rust: rust(),

@@ -115,45 +115,34 @@ where
 }
 
 pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Error> {
-    let mut components = req_path_dec
+    let components_raw = req_path_dec
         .split('/')
-        .filter(|c| !c.is_empty() && c != &".")
-        .collect::<Vec<_>>();
+        .filter(|c| !c.is_empty() && c != &".");
 
-    let parent_count = (0..components.len())
-        .into_iter()
-        .rev()
-        .fold(0, |count, idx| match (idx < components.len(), idx > 0) {
-            (true, true) => match (components[idx] == "..", components[idx - 1] == "..") {
-                (false, _) => count,
-                (true, false) => {
-                    components.remove(idx);
-                    components.remove(idx - 1);
-                    count
-                }
-                (true, true) => {
-                    components.remove(idx);
-                    count + 1
-                }
-            },
-            (false, _) => count,
-            (true, false) => {
-                if count >= components.len() {
-                    components.clear();
-                    count
-                } else {
-                    let new_len = components.len() - count;
-                    components.truncate(new_len);
-                    components.first().map(|f| *f == "..").map(|b| {
-                        if b {
-                            components.clear()
-                        }
-                    });
-                    count
-                }
+    let components =match components_raw.fold(Ok(vec![]), |cs, c| 
+        if cs.is_ok() {
+            let mut cs = cs.unwrap();
+            match (cs.len()>0, c == "..") {
+                (_, false)=> {
+                    cs.push(c);
+                    Ok(cs)
+                },
+                (true, true)=>{
+                    cs.pop();
+                    Ok(cs)
+                },
+                (false, true)=> {
+                    Err(cs)
+                },
             }
-        });
-    debug!("{}: {:?}", parent_count, components);
+        } else {
+          cs
+        }
+     ) {
+         Ok(o)=> o,
+         Err(e)=> e,
+     };
+    debug!("{} -> {:?}", req_path_dec, components);
 
     let req_path = || {
         let mut tmp = components
@@ -196,75 +185,38 @@ pub fn router(req_path_dec: &str, base: &str, path: &PathBuf) -> Result<(String,
 #[test]
 fn router_test() {
     use std::path::Path;
-    assert!(Path::new("tests/index").exists());
     // router(req_path_dec:&str, base: &str, path: &PathBuf) -> Result<(String, PathBuf), Error>
-    assert_eq!(
-        router("/", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/../../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index", "/", &PathBuf::from("tests")).unwrap(),
-        ("/index".to_owned(), PathBuf::from("tests/index"))
-    );
-    assert_eq!(
-        router("/index/", "/", &PathBuf::from("tests")).unwrap(),
-        ("/index/".to_owned(), PathBuf::from("tests/index"))
-    );
-    assert_eq!(
-        router("/index/../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    // 301 "" -> "/index/.././" by StaticIndex...
-    assert_eq!(
-        router("/index/../.", "/", &PathBuf::from("tests")).unwrap(),
-        ("".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/.././", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/../..", "/", &PathBuf::from("tests")).unwrap(),
-        ("".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/../../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/file", "/", &PathBuf::from("tests")).unwrap(),
-        ("/index/file".to_owned(), PathBuf::from("tests/index/file"))
-    );
-    assert_eq!(
-        router("/index/file/", "/", &PathBuf::from("tests")).unwrap(),
-        ("/index/file/".to_owned(), PathBuf::from("tests/index/file"))
-    );
-    assert_eq!(
-        router("/index/file/../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/index/".to_owned(), PathBuf::from("tests/index"))
-    );
-    assert_eq!(
-        router("/index/file/../../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/file/../..", "/", &PathBuf::from("tests")).unwrap(),
-        ("".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/../file/../../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
-    assert_eq!(
-        router("/index/../../file/../../", "/", &PathBuf::from("tests")).unwrap(),
-        ("/".to_owned(), PathBuf::from("tests"))
-    );
+    fn test(list: Vec<((&str, &str ,&str), Result<(&str, &str), Error>)>) {
+        for (idx, (args, res)) in list.into_iter().enumerate() {
+            let (req, base, path) = args;
+            let res = res.map(|(u, p)|(u.to_string(), PathBuf::from(p)));
+            let res2 = router(req, base, &PathBuf::from(path));
+            if res.is_ok() && res2.is_ok()&& res.as_ref().unwrap() != res2.as_ref().unwrap() ||  
+            ! (res.is_ok() && res2.is_ok()) && !(res.is_err() && res2.is_err())  {
+                panic!(format! ("\n{:?} != {:2}\n{:?} <= router(\"{}\", \"{}\", \"{}\")\n",res, idx, res2, req, base, path));
+            }
+        }
+    }
+    assert!(Path::new("tests/index").exists());
+
+    test( vec!(
+        (("/", "/", "tests"),Ok(("/", "tests"))),
+        (("/../", "/", "tests"),Ok(("/", "tests"))),
+        (("/../../", "/", "tests"),Ok(("/", "tests"))),
+        (("/index", "/", "tests"),Ok(("/index", "tests/index"))),
+        (("/index/", "/", "tests"),Ok(("/index/", "tests/index"))),
+        (("/index/../", "/", "tests"),Ok(("/", "tests"))),
+        // 301 "" -> "/index/.././" by StaticIndex...
+        (("/index/../.", "/", "tests"),Ok(("", "tests"))),
+        (("/index/.././", "/", "tests"),Ok(("/", "tests"))),
+        (("/index/../..", "/", "tests"),Ok(("", "tests"))),
+        (("/index/../../", "/", "tests"),Ok(("/", "tests"))),
+        (("/index/file", "/", "tests"),Ok(("/index/file", "tests/index/file"))),
+        (("/index/file/", "/", "tests"),Ok(("/index/file/", "tests/index/file"))),
+        (("/index/file/../", "/", "tests"),Ok(("/index/", "tests/index"))),
+        (("/index/file/../../", "/", "tests"),Ok(("/", "tests"))),
+        (("/index/file/../..", "/", "tests"),Ok(("", "tests"))),
+        (("/index/../file/../../", "/", "tests"),Ok(("/", "tests"))),
+        (("/index/../../file/../../", "/", "tests"),Ok(("/", "tests"))),
+    ));
 }
