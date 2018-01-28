@@ -3,6 +3,7 @@ extern crate futures_cpupool;
 extern crate hyper;
 #[macro_use]
 extern crate log;
+extern crate mime;
 extern crate mxo_env_logger;
 extern crate num_cpus;
 extern crate tokio_core;
@@ -14,7 +15,7 @@ use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::TcpListener;
 use futures::{Future, Stream};
 use hyper::server::{Http, Request, Response, Service};
-use hyper::header::Headers;
+use hyper::header::{self, Headers};
 use hyper::Error;
 use url::percent_encoding::percent_decode;
 
@@ -72,7 +73,7 @@ impl FileServer {
             config: Arc::new(config),
             headers_index: Some({
                 let mut tmp = Headers::new();
-                tmp.set_raw("Content-Type", "text/html; charset=utf-8");
+                tmp.set(header::ContentType(mime::TEXT_HTML_UTF_8));
                 tmp
             }),
         }

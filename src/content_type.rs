@@ -1,4 +1,4 @@
-use hyper::header::Headers;
+use hyper::header::{self, Headers};
 use hyper::Request;
 use mime_guess;
 
@@ -10,9 +10,6 @@ use std::io;
 pub fn maker(_file: &mut File, _metadata: &Metadata, path: &PathBuf, _req: &Request, headers: &mut Headers) -> io::Result<()> {
     let mime = mime_guess::guess_mime_type(path);
     trace!("{:?}", mime);
-    headers.set_raw(
-        "Content-Type",
-        format!("{}/{}", mime.type_(), mime.subtype()),
-    );
+    headers.set(header::ContentType(mime));
     Ok(())
 }

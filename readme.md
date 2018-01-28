@@ -16,7 +16,7 @@ On Cargo.toml:
 
 ```toml
  [dependencies]
- hyper-fs = "0.1.1"
+ hyper-fs = "0.2.0"
 ```
 
 #### Documentation
@@ -35,10 +35,9 @@ or
 ### To Do
 
 | name | status |
-| ------ | ---:|
-|Get/Head                  | yes|
-|Not Modified(304)         | yes|
-|File Range(bytes)         | yes|
-|Upload                    | no |
+| ------ | --- |
+|Get/Head                  | yes |
+|Not Modified(304)         | yes |
+|File Range(bytes)         | yes |
 
 License: BSD-3-Clause

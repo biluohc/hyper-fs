@@ -38,7 +38,6 @@ or
 |Get/Head                  | yes |
 |Not Modified(304)         | yes |
 |File Range(bytes)         | yes |
-|Upload                    | no  |
 */
 extern crate bytes;
 #[macro_use]
@@ -50,6 +49,7 @@ extern crate hyper;
 extern crate log;
 extern crate tokio_core;
 extern crate url;
+// extern crate mime;
 extern crate walkdir;
 
 use futures::future::Future;
